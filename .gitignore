@@ -23,9 +23,6 @@ build/patchedPluginXmlFiles/
 .DS_Store
 Thumbs.db
 
-# AI 编辑器 / 工具的本地目录（与项目无关，不入库）
-.trae/
-
 # Gradle / Kotlin 的本地状态目录
 .kotlin/
 
