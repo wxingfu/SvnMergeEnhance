@@ -1,8 +1,14 @@
 package com.weixf.svn.mergeenhance.ui
 
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.CustomShortcutSet
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.util.text.StringUtil
+import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import com.weixf.svn.mergeenhance.EnhanceMergeBundle
 import java.awt.BorderLayout
 import java.awt.Component
@@ -12,7 +18,6 @@ import javax.swing.Action
 import javax.swing.BoxLayout
 import javax.swing.JButton
 import javax.swing.JComponent
-import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.KeyStroke
 
@@ -25,6 +30,10 @@ import javax.swing.KeyStroke
  *
  * 视觉沿用原版：左对齐的按钮 + 按钮下方的多行说明 + 底部留白，
  * 不使用 DialogWrapper 的标准按钮行（避免出现第二组 OK/Cancel），ESC 显式绑定到取消。
+ *
+ * 为什么按钮仍是 `javax.swing.JButton`：IDEA 自有的 `com.intellij.ui.components.JButton`
+ * 在 2022.1（`since-build=221`）还不存在，2023.2 才引入——用它会直接破坏 2022.1 兼容性。
+ * 文字/说明标签则用平台的 `JBLabel` + `UIUtil.getContextHelpForeground()`（这些在 221 就有）。
  *
  * `createActions()` 返回空数组是"不显示标准按钮行"的开关——返回空比返回带
  * OK/Cancel 的 Action 更干净（后者还要处理它们的可见性）。
@@ -42,12 +51,17 @@ class MergeVariantDialog(project: Project) : DialogWrapper(project, true) {
         title = EnhanceMergeBundle.message("dialog.title.select.merge.variant")
         init()
 
-        // 无标准按钮行时 DialogWrapper 不会自动绑 ESC，这里显式补上
-        // （WHEN_IN_FOCUSED_WINDOW：对话框内任意焦点下按 ESC 都生效，与模态框预期一致）
-        rootPane.registerKeyboardAction(
-            { doCancelAction() },
-            KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
-            JComponent.WHEN_IN_FOCUSED_WINDOW,
+        // 无标准按钮行时 DialogWrapper 不会自动绑 ESC，这里补上。
+        // 用平台 Action + CustomShortcutSet（而非 rootPane.registerKeyboardAction）：
+        // 走 Action 系统才能被快捷键映射/可访问性机制识别，且随 disposable 自动解绑。
+        // 绑在 rootPane 上 = 对话框内任意焦点下按 ESC 都生效，与模态框预期一致。
+        val escapeAction = object : DumbAwareAction() {
+            override fun actionPerformed(e: AnActionEvent) = doCancelAction()
+        }
+        escapeAction.registerCustomShortcutSet(
+            CustomShortcutSet(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0)),
+            rootPane,
+            disposable,
         )
     }
 
@@ -86,14 +100,18 @@ class MergeVariantDialog(project: Project) : DialogWrapper(project, true) {
      * @param description 说明文字（可为 null，通常含 `\n` 换行）
      */
     private fun optionRow(button: JButton, description: String?): JComponent {
-        val row = JPanel(BorderLayout(0, 2))
+        val row = JPanel(BorderLayout(0, JBUI.scale(ROW_VGAP)))
         val buttonHolder = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
         buttonHolder.add(button)
         row.add(buttonHolder, BorderLayout.NORTH)
 
         if (description != null) {
-            // 用 <br> 承载换行：比 MultiLineLabelUI 更稳定，中英文断行都由文案里的 \n 控制
-            val label = JLabel("<html>" + description.replace("\n", "<br>") + "</html>")
+            // 用 <br> 承载换行：比 MultiLineLabelUI 更稳定，中英文断行都由文案里的 \n 控制。
+            // 拼 HTML 前先转义：文案里出现 < > & 时（如 "Merge & Merge"）不应被当成标签解析。
+            val html = StringUtil.escapeXmlEntities(description).replace("\n", "<br>")
+            val label = JBLabel("<html>$html</html>")
+            // 说明文字用平台的"上下文帮助"灰，与主按钮形成层次（也自动跟随明暗主题）
+            label.foreground = UIUtil.getContextHelpForeground()
             label.border = JBUI.Borders.empty(0, 2, 10, 0)
             row.add(label, BorderLayout.CENTER)
         }
@@ -108,7 +126,10 @@ class MergeVariantDialog(project: Project) : DialogWrapper(project, true) {
     }
 
     companion object {
-        /** 自定义退出码：选中「Revision Select」。 */
+        /** 自定义退出码：选中「Revision Select」（DialogWrapper 约定 0=OK / 1=Cancel）。 */
         const val REVISION_SELECT_CODE = 100
+
+        /** 按钮与其下方说明文字之间的间距（像素，经 JBUI 缩放）。 */
+        private const val ROW_VGAP = 2
     }
 }

@@ -4,6 +4,8 @@ import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
+import java.util.Date
+import java.util.concurrent.TimeUnit
 
 /**
  * 插件设置（Spec R11），持久化到应用级 `svnEnhanceMerge.xml`。
@@ -112,13 +114,17 @@ class EnhanceMergeSettings : PersistentStateComponent<EnhanceMergeSettings.State
      * 使 Bug-ID 字段退化为「不匹配」而不是崩溃）。
      */
     val bugIdRegex: Regex?
-        get() = runCatching { Regex(bugIdPattern) }.getOrNull()
+        get() = try {
+            Regex(bugIdPattern)
+        } catch (e: IllegalArgumentException) {
+            null
+        }
 
     /** 默认日期范围的起始日期（[defaultDateRangeDays] 天前）；<=0 时返回 null 表示不限制。 */
-    fun defaultFromDate(now: Long = System.currentTimeMillis()): java.util.Date? {
+    fun defaultFromDate(now: Long = System.currentTimeMillis()): Date? {
         val days = state.defaultDateRangeDays
         if (days <= 0) return null
-        return java.util.Date(now - days * MILLIS_PER_DAY)
+        return Date(now - TimeUnit.DAYS.toMillis(days.toLong()))
     }
 
     // ------------------------------------------------------------ 内部
@@ -130,7 +136,10 @@ class EnhanceMergeSettings : PersistentStateComponent<EnhanceMergeSettings.State
     }
 
     companion object {
+        /** 每页条数下限（设置页 spinner 与配置校验共用）。 */
         const val MIN_PAGE_SIZE = 10
+
+        /** 每页条数上限：与「Show All / +500」的分页步长同量级，避免一次拉爆内存。 */
         const val MAX_PAGE_SIZE = 500
 
         /**
@@ -141,8 +150,6 @@ class EnhanceMergeSettings : PersistentStateComponent<EnhanceMergeSettings.State
 
         /** Bug-ID 默认正则：`[A-Z][A-Z0-9]+-\d+`。 */
         const val DEFAULT_BUG_ID_PATTERN = "[A-Z][A-Z0-9]+-\\d+"
-
-        private const val MILLIS_PER_DAY = 86_400_000L
 
         fun getInstance(): EnhanceMergeSettings = service()
     }

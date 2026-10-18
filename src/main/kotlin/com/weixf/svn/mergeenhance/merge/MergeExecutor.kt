@@ -1,6 +1,7 @@
 package com.weixf.svn.mergeenhance.merge
 
-import com.intellij.openapi.application.invokeLater
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import org.jetbrains.idea.svn.history.SvnChangeList
@@ -46,14 +47,21 @@ object MergeExecutor {
         val quickMerge = QuickMerge(context, QuickMergeInteractionImpl(context))
         val callback = Runnable { merge(context, selected) }
 
-        invokeLater {
-            try {
-                LocalChangesPromptTask(quickMerge, selected, callback).run()
-            } catch (e: Exception) {
-                // 兜底：前置提示失败不应让整个流程无声终止（原版此处的异常同样只进日志）
-                LOG.error("Failed to run local changes prompt before merge", e)
-            }
-        }
+        ApplicationManager.getApplication().invokeLater(
+            {
+                try {
+                    LocalChangesPromptTask(quickMerge, selected, callback).run()
+                } catch (e: Exception) {
+                    // 兜底：前置提示失败不应让整个流程无声终止（原版此处的异常同样只进日志）。
+                    // 用 warn 而非 error：这是可恢复的前置步骤失败，不该按"插件内部错误"上报。
+                    LOG.warn("Failed to run local changes prompt before merge", e)
+                }
+            },
+            // 官方要求：invokeLater 必须显式给 ModalityState（默认状态在模态框关闭动画期间
+            // 可能尚未恢复），并给"过期条件"——项目已关闭时直接丢弃，别再弹模态框。
+            ModalityState.defaultModalityState(),
+            context.project.disposed,
+        )
     }
 
     /**

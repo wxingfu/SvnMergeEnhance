@@ -30,7 +30,7 @@ alwaysApply: false
 - Gradle 运行 JDK：`org.gradle.java.home=D:/softwares/Java/jdk-11.0.32.1`（JDK 8 无法构建 since-2022 插件）。
 - Kotlin/Java 目标字节码 **11**（同时覆盖 2022.1/2.2 的 JBR11 与 2022.3+ 的 JBR17）。
 - `GRADLE_USER_HOME=G:\GradleRepository`；ideaIC 解压目录固定 `intellij.ideaDependencyCachePath=G:/GradleRepository/idea`。
-- 构建/验证命令：`gradlew buildPlugin`（产出 `build/distributions/*.zip`）、`gradlew test`（49 个用例）、
+- 构建/验证命令：`gradlew buildPlugin`（产出 `build/distributions/*.zip`）、`gradlew test`（53 个用例）、
   `gradlew verifyOnIde -PideaVersion=<版本>`（切版本启沙箱 + 扫插件异常日志，报 PASS/FAIL）、
   `gradlew runPluginVerifier`（官方 Plugin Verifier，比对二进制 API；`-PverifierLocalIde=<已解压 ideaIC 目录>` 可复用本地 SDK 不下载 IDE）、
   `gradlew runIde`（沙箱人工实测）。
@@ -71,6 +71,36 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 **排查超时先看 `idea.log` 里 `EnhanceMerge i18n` 就绪行是否已出现**（出现=只是慢，加大
 `-PverifyTimeout=600` 重跑即可）；确属插件错误时该行缺失且日志有 ERROR。
 
+### 代码规范（官方插件开发规范，2026-10-18 全量审查后固化）
+
+**反射是本项目唯一被允许的“非公开 API”**（`WcInfoLinkInjector` 取 `WCInfo`，
+`EnhanceMergeBundle` 跨版本取语言包），其余一律走公开 API + `JBUI`/`UIUtil`/平台组件。
+
+- **禁用 `javax.swing.Timer`**（官方明令）：一律用 `com.intellij.util.Alarm`，且必须给父 `Disposable`
+  （`Alarm(ThreadToUse.SWING_THREAD, disposable)`）；Swing Timer 不受 Disposer 管、关闭后仍会回调。
+  防抖写法：`cancelAllRequests()` + `addRequest(runnable, ms)`（Alarm 没有 `restart()`）。
+- **HiDPI**：所有像素值走 `JBUI.scale(...)` / `JBUI.Borders.*` / `JBUI.size(...)`；
+  裸 `FlowLayout/BorderLayout` 的 gap、`JTable.rowHeight`、`Splitter.dividerWidth` 都要缩放。
+  发丝线 `JBUI.Borders.customLine(color, 1)` **不缩放是平台惯例**，不必改。
+- **主题色**：只用 `UIUtil.*` / `JBColor.border()` 等主题入口，**禁硬编码颜色**
+  （原先的 `JBColor.RED` 已换成 `UIUtil.getErrorForeground()`）。
+- **禁 `catch (Throwable)`**：反射路径分 `ReflectiveOperationException`（方法/字段不存在）
+  与 `LinkageError`（类在但签名不兼容）两段；正则只捕获 `IllegalArgumentException`。
+- **`invokeLater` 必须显式带 `ModalityState` + 过期条件**（`project.disposed`）。
+- **`LOG.error` 只用于真正的内部错误**；可恢复的失败一律 `LOG.warn`（否则会触发插件上报/blame）。
+- **用户可见文本（含标点）一律进文案包**：状态栏 `r{x} – r{y}`、`[已合并]` 的方括号都不能在代码里拼。
+  动态 key（`"filter.field." + field.id`）必须由 `BundleKeysTest` 双向对齐守护。
+- **`Configurable` 的 EP 上不要写 `key` / `displayName`**：`ConfigurableWrapper.getDisplayName()`
+  里 EP 优先，会绕过本插件“语言包感知”的 `EnhanceMergeBundle`（中文系统 + 英文 IDE 会显示中文）。
+  两个都不写即回退到 `Configurable.getDisplayName()`；同理无需 `<resource-bundle>`。
+- **进度条**：总量未知时用 `isIndeterminate = true` + `text2` 显示计数，
+  **不要**用取模/递增伪造 `fraction`（官方不允许编造进度百分比）。
+- **2022.1（since-build=221）里不存在、禁止使用的 API**（用了直接编译失败或要抬高 since-build）：
+  `com.intellij.ui.components.JButton`（2023.2+）、`AnAction.getActionUpdateThread()` /
+  `ActionUpdateThread`（2023.x+）、`CommonShortcuts`（本机 221 无）、`UIUtil.getCheckBoxWidth`、
+  `FormBuilder.addLineGap()`（用 `addVerticalGap(-1)` 代替）。
+- 其它已确认可用：`Alarm(ThreadToUse, Disposable)`、`CustomShortcutSet`、`DumbAwareAction`、
+  `UIUtil.getErrorForeground/getContextHelpForeground`、`com.intellij.openapi.util.text.StringUtil`。
 ## 依赖边界（硬约束）
 
 - **禁止引入 SVNKit** 或任何外部 Maven 坐标；所需类全部由 IntelliJ SDK 提供。
@@ -173,7 +203,7 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`
 - `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
 
-单测：`LogFilterTest`(25) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3) = **49**。
+单测：`LogFilterTest`(25) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3) + `BundleKeysTest`(4) = **53**。
 
 ### 2026-10-18 官方规范合规整改（已完成）
 
@@ -255,7 +285,7 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   （逗号分隔多目录）实跑：**IC-221.5080.210 与 IC-262.10968.63 两端均 Compatible**，2026.2.3 侧 0 兼容性问题
   （仅 2 处 deprecated：`ActionToolbar.updateActionsImmediately`、`TableViewSpeedSearch` 单参构造，都仍可用不阻断），报告在 `build/reports/pluginVerifier/`；
   `verifyPlugin` / `verifyPluginConfiguration`（官方包结构与配置校验）均通过且**零告警**；
-  单测 **49 个**（`EnhanceMergeBundleTest` 3 个为新增）全过；
+  单测 **53 个**（`EnhanceMergeBundleTest` 3 + `BundleKeysTest` 4 为新增）全过；
   `verify-plugin.sh`（Unix 版）本机无 bash **尚未实跑**，首次在 Linux/macOS 使用前请先人工执行一次确认。
 - **PowerShell 调用 gradlew 的坑**：`-PideaVersion=2022.1` 这类含点号的参数必须加引号
   （`"-PideaVersion=2022.1"`），否则会被 PowerShell 拆成 `-PideaVersion=2022` + `.1`，报 `Task '.1' not found`。

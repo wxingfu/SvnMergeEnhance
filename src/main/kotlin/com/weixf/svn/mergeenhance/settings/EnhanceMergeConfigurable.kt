@@ -38,26 +38,28 @@ class EnhanceMergeConfigurable : Configurable {
                 settings.pageSize,
                 EnhanceMergeSettings.MIN_PAGE_SIZE,
                 EnhanceMergeSettings.MAX_PAGE_SIZE,
-                10,
+                PAGE_SIZE_STEP,
             )
         )
         mergeStatusCheckBox = JBCheckBox().apply { isSelected = settings.computeMergeStatus }
-        bugIdField = JBTextField(settings.bugIdPattern, 40)
-        dateRangeSpinner = JSpinner(SpinnerNumberModel(settings.defaultDateRangeDays, 0, 3650, 1))
+        bugIdField = JBTextField(settings.bugIdPattern, PATTERN_FIELD_COLUMNS)
+        dateRangeSpinner = JSpinner(
+            SpinnerNumberModel(settings.defaultDateRangeDays, 0, MAX_DATE_RANGE_DAYS, DATE_RANGE_STEP)
+        )
 
         return FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel(EnhanceMergeBundle.message("settings.page.size")), pageSizeSpinner!!)
             .addTooltip(EnhanceMergeBundle.message("settings.page.size.hint"))
-            .addVerticalGap(12)
+            .addVerticalGap(FORM_LINE_GAP)
             .addLabeledComponent(
                 JBLabel(EnhanceMergeBundle.message("settings.compute.merge.status")),
                 mergeStatusCheckBox!!,
             )
             .addTooltip(EnhanceMergeBundle.message("settings.compute.merge.status.hint"))
-            .addVerticalGap(12)
+            .addVerticalGap(FORM_LINE_GAP)
             .addLabeledComponent(JBLabel(EnhanceMergeBundle.message("settings.bug.id.pattern")), bugIdField!!)
             .addTooltip(EnhanceMergeBundle.message("settings.bug.id.pattern.hint"))
-            .addVerticalGap(12)
+            .addVerticalGap(FORM_LINE_GAP)
             .addLabeledComponent(
                 JBLabel(EnhanceMergeBundle.message("settings.default.date.range")),
                 dateRangeSpinner!!,
@@ -102,4 +104,26 @@ class EnhanceMergeConfigurable : Configurable {
     }
 
     override fun getHelpTopic(): String? = null
+
+    private companion object {
+        /**
+         * `FormBuilder.addVerticalGap` 的"一整行"间距。
+         *
+         * 传 -1 时平台插入一个空 `JLabel`，高度由**当前行高/字体/HiDPI 缩放**决定；
+         * 直接写像素（如 12）在 200% 缩放下会明显偏窄，故不用魔法数字。
+         */
+        const val FORM_LINE_GAP = -1
+
+        /** 每页条数 spinner 的步进（10 条一档）。 */
+        const val PAGE_SIZE_STEP = 10
+
+        /** 日期范围 spinner 的步进（1 天）。 */
+        const val DATE_RANGE_STEP = 1
+
+        /** 日期范围上限：10 年，够用且防止误填天文数字。 */
+        const val MAX_DATE_RANGE_DAYS = 3650
+
+        /** Bug-ID 正则输入框的列数（列是字符数，与 HiDPI 缩放无关）。 */
+        const val PATTERN_FIELD_COLUMNS = 40
+    }
 }

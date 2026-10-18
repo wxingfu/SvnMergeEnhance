@@ -1,6 +1,8 @@
 package com.weixf.svn.mergeenhance.log
 
 import org.jetbrains.idea.svn.history.SvnChangeList
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Date
 
 /**
@@ -183,7 +185,8 @@ data class LogFilter(
             return tokens.all { t ->
                 try {
                     Regex(t.text, opts).containsMatchIn(combined)
-                } catch (e: Exception) {
+                } catch (e: IllegalArgumentException) {
+                    // 用户写了非法正则：该 token 视为不匹配（而不是让整个过滤崩掉）
                     false
                 }
             }
@@ -219,8 +222,8 @@ data class LogFilter(
                 try {
                     val opts = if (caseSensitive) emptySet<RegexOption>() else setOf(RegexOption.IGNORE_CASE)
                     ranges.addAll(Regex(t.text, opts).findAll(text).map { it.range })
-                } catch (e: Exception) {
-                    // 非法正则忽略
+                } catch (e: IllegalArgumentException) {
+                    // 非法正则忽略（该 token 不产生高亮）
                 }
             } else {
                 ranges.addAll(substringRanges(text, t.text))
@@ -269,14 +272,23 @@ data class LogFilter(
     }
 
     /** 日期字段的规范显示/匹配文本（与渲染器保持一致，确保高亮命中）。 */
-    fun dateText(date: Date): String = DATE_DISPLAY.format(date)
+    fun dateText(date: Date): String = DATE_TIME_FORMATTER.format(date.toInstant())
 
     companion object {
         /** 默认 Bug-ID 正则：`[A-Z][A-Z0-9]+-\d+`。 */
         val DEFAULT_BUG_ID_PATTERN: Regex = Regex("[A-Z][A-Z0-9]+-\\d+")
 
-        /** 日期显示/匹配统一格式（`yyyy-MM-dd HH:mm`）。 */
-        val DATE_DISPLAY = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm")
+        /**
+         * 日期显示/匹配统一格式（`yyyy-MM-dd HH:mm`）。
+         *
+         * 用 `java.time.format.DateTimeFormatter` 而**不是** `SimpleDateFormat`：后者非线程安全
+         * （可变 formatter），而 [dateText] 会被 EDT（渲染/高亮）与后台线程（分页过滤）同时调用，
+         * 共用一个静态实例会随机抛错甚至串格式。`DateTimeFormatter` 不可变、线程安全。
+         */
+        private const val DATE_TIME_PATTERN = "yyyy-MM-dd HH:mm"
+
+        private val DATE_TIME_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern(DATE_TIME_PATTERN).withZone(ZoneId.systemDefault())
 
         /**
          * 解析版本区间文本：`40` / `40-50` / `40-` / `-50`（也接受 `:` `~` 与空格）。

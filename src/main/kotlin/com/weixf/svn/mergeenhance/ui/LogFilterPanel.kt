@@ -6,10 +6,12 @@ import com.github.lgooddatepicker.components.DatePickerSettings.DateArea
 import com.github.lgooddatepicker.optionalusertools.CalendarBorderProperties
 import com.github.lgooddatepicker.optionalusertools.DateChangeListener
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.Disposable
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
+import com.intellij.util.Alarm
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.weixf.svn.mergeenhance.EnhanceMergeBundle
@@ -23,6 +25,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
 import java.util.Date
 import javax.swing.BorderFactory
@@ -30,7 +33,6 @@ import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.SwingUtilities
-import javax.swing.Timer
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
@@ -50,7 +52,10 @@ import javax.swing.event.DocumentListener
  *   一周起始日固定为**周一**（中国习惯，不随 locale 漂移，见 [createDatePicker]）。
  * - 任意变化 300ms 防抖后回调。
  */
-class LogFilterPanel(private val onFilterChanged: () -> Unit) : JPanel() {
+class LogFilterPanel(
+    parentDisposable: Disposable,
+    private val onFilterChanged: () -> Unit,
+) : JPanel() {
 
     private val settings = EnhanceMergeSettings.getInstance()
 
@@ -103,19 +108,27 @@ class LogFilterPanel(private val onFilterChanged: () -> Unit) : JPanel() {
     private val toPicker = createDatePicker()
 
     /** 起止日历容器；`Date range` 未勾选时整体隐藏。 */
-    private val datePanel = JPanel(FlowLayout(FlowLayout.LEFT, 2, 0)).apply {
+    private val datePanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(ITEM_HGAP), 0)).apply {
         add(JBLabel(EnhanceMergeBundle.message("filter.from")))
         add(fromPicker)
         add(JBLabel(EnhanceMergeBundle.message("filter.to")))
         add(toPicker)
     }
 
-    private val debounce = Timer(DEBOUNCE_MS) { onFilterChanged() }.apply { isRepeats = false }
+    /**
+     * 输入防抖。
+     *
+     * 用平台的 [Alarm] 而**不是** `javax.swing.Timer`：官方明确要求禁用 Swing Timer
+     * （它不受 Disposer 管理、对模态状态无感知、面板关闭后仍可能回调）。
+     * [Alarm] 绑在对话框的 disposable 上，对话框一关请求自动作废。
+     */
+    private val debounce = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
+
     private var suppressEvents = false
     private var dateBounds: Pair<Date?, Date?> = null to null
 
     init {
-        layout = BorderLayout(6, 0)
+        layout = BorderLayout(JBUI.scale(ITEM_HGAP), 0)
         border = JBUI.Borders.empty(2, 6, 2, 6)
 
         searchField.emptyText.text = EnhanceMergeBundle.message("filter.search.placeholder")
@@ -140,8 +153,8 @@ class LogFilterPanel(private val onFilterChanged: () -> Unit) : JPanel() {
         fromPicker.addDateChangeListener(dateListener)
         toPicker.addDateChangeListener(dateListener)
 
-        val west = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply { add(byButton) }
-        val east = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0)).apply { add(datePanel) }
+        val west = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(BUTTON_HGAP), 0)).apply { add(byButton) }
+        val east = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(ITEM_HGAP), 0)).apply { add(datePanel) }
 
         add(west, BorderLayout.WEST)
         add(searchBox, BorderLayout.CENTER)
@@ -169,7 +182,7 @@ class LogFilterPanel(private val onFilterChanged: () -> Unit) : JPanel() {
      */
     private fun createDatePicker(): DatePicker {
         val settings = DatePickerSettings(EnhanceMergeBundle.locale)
-        settings.setFormatForDatesCommonEra("yyyy-MM-dd")
+        settings.setFormatForDatesCommonEra(DATE_TEXT_PATTERN)
         // 一周第一天固定为周一（中国习惯：周一在首列、周日在末列）。
         // 为什么必须显式设置：LGoodDatePicker 默认按 locale 推断起始日——英文 locale 是
         // 周日开头，装了中文语言包才是周一起始。若跟随 locale，会出现"中文 IDE 周一开头、
@@ -183,7 +196,7 @@ class LogFilterPanel(private val onFilterChanged: () -> Unit) : JPanel() {
         settings.setVisibleClearButton(false)
         // LGood 按字体自动算宽度，在高 DPI / IDEA 字体下会偏窄导致「2023-12-31」被裁成「023-12-31」，
         // 这里显式给足宽度并强制覆盖默认值。
-        settings.setSizeTextFieldMinimumWidth(JBUI.scale(96))
+        settings.setSizeTextFieldMinimumWidth(JBUI.scale(DATE_FIELD_MIN_WIDTH))
         settings.setSizeTextFieldMinimumWidthDefaultOverride(true)
         // 弹窗外框：默认是 LGood 硬编码的蓝色 LineBorder(99,130,191)，改为与 By / 搜索框一致的
         // 1px 主题边框 + 2px 留白。
@@ -253,7 +266,7 @@ class LogFilterPanel(private val onFilterChanged: () -> Unit) : JPanel() {
         s.setColor(DateArea.TextFieldBackgroundVetoedDate, fieldBg)
         s.setColor(DateArea.TextFieldBackgroundDisabled, bg)
         s.setColor(DateArea.DatePickerTextValidDate, fieldFg)
-        s.setColor(DateArea.DatePickerTextInvalidDate, JBColor.RED)
+        s.setColor(DateArea.DatePickerTextInvalidDate, UIUtil.getErrorForeground())
         s.setColor(DateArea.DatePickerTextVetoedDate, fieldFg)
         s.setColor(DateArea.DatePickerTextDisabled, inactive)
 
@@ -287,7 +300,9 @@ class LogFilterPanel(private val onFilterChanged: () -> Unit) : JPanel() {
     private fun onInputChanged() {
         if (suppressEvents) return
         persistOptions()
-        debounce.restart()
+        // 防抖：先取消未触发的请求再排一个新的（Alarm 没有 Swing Timer 的 restart()）
+        debounce.cancelAllRequests()
+        debounce.addRequest({ onFilterChanged() }, DEBOUNCE_MS)
     }
 
     /**
@@ -416,11 +431,29 @@ class LogFilterPanel(private val onFilterChanged: () -> Unit) : JPanel() {
     /** LGoodDatePicker 的 LocalDate 转 java.util.Date（endOfDay=true 时取到当日 23:59:59）。 */
     private fun toDate(picker: DatePicker, endOfDay: Boolean): Date? {
         val ld = picker.date ?: return null
-        val ldt = if (endOfDay) ld.atTime(23, 59, 59) else ld.atStartOfDay()
+        val ldt = if (endOfDay) ld.atTime(LocalTime.MAX) else ld.atStartOfDay()
         return Date.from(ldt.atZone(ZoneId.systemDefault()).toInstant())
     }
 
     private companion object {
+        /** 输入防抖间隔（毫秒）：连续敲字时只触发一次重查。 */
         const val DEBOUNCE_MS = 300
+
+        /** 过滤栏内各控件之间的水平间距（经JBUI 缩放）。 */
+        const val ITEM_HGAP = 6
+
+        /** By 按钮与相邻控件的间距（经 JBUI 缩放）。 */
+        const val BUTTON_HGAP = 4
+
+        /**
+         * 日期输入框的显示格式。
+         *
+         * 固定 ISO 而非跟随 locale：过滤栏里的日期文本要能被 [LogFilter] 的文本匹配命中，
+         * 格式随语言漂移会让"照着框里输入"变得不可预测（TortoiseSVN 亦用固定格式）。
+         */
+        const val DATE_TEXT_PATTERN = "yyyy-MM-dd"
+
+        /** 日期输入框最小宽度（经 JBUI 缩放）：容纳 `yyyy-MM-dd` 而不被裁剪。 */
+        const val DATE_FIELD_MIN_WIDTH = 96
     }
 }

@@ -1,5 +1,6 @@
 package com.weixf.svn.mergeenhance.wcinfo
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
@@ -7,6 +8,7 @@ import com.intellij.openapi.startup.StartupActivity
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.components.labels.LinkLabel
 import com.intellij.ui.components.labels.LinkListener
+import com.intellij.util.Alarm
 import com.intellij.util.ui.JBUI
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowId
@@ -19,7 +21,6 @@ import java.awt.Component
 import java.awt.Container
 import java.awt.event.ContainerEvent
 import java.awt.event.ContainerListener
-import javax.swing.Timer
 
 /**
  * 把「Enhance Merge…」注入到 IDEA 内置 SVN 插件的
@@ -59,7 +60,7 @@ class WcInfoLinkInjector : StartupActivity.DumbAware {
  * 而本类持有 Timer / messageBus 订阅，必须在项目关闭时释放 —— 放在独立类里便于
  * 明确其disposable 归属。
  */
-private class LinkInstaller(private val project: Project) {
+private class LinkInstaller(private val project: Project) : Disposable {
 
     companion object {
         private val LOG = Logger.getInstance(LinkInstaller::class.java)
@@ -67,32 +68,43 @@ private class LinkInstaller(private val project: Project) {
         /** svn4idea 内部面板类的运行时类名（该类非公开 API，仅按名字匹配） */
         private const val PANEL_CLASS_NAME = "org.jetbrains.idea.svn.dialogs.WorkingCopyInfoPanel"
 
-        /** 面板链接文字（T9.4：走本地化 bundle，不再硬编码）。 */
+        /** 面板链接文字（走本地化 bundle，不硬编码）。 */
         private val LINK_TEXT: String
             get() = EnhanceMergeBundle.message("link.text.enhance.merge")
 
         private const val KEY_OUR_LABEL = "svn.enhanceMerge.label"
         private const val KEY_CONTAINER_HOOKED = "svn.enhanceMerge.containerHooked"
         private const val KEY_LOGGED = "svn.enhanceMerge.logged"
+
+        /** 面板上取当前工作副本信息的取值方法名（svn4idea 内部，非公开 API）。 */
+        private const val WC_INFO_GETTER = "getInfo"
+
+        /**
+         * 兜底轮询间隔（毫秒）。
+         *
+         * 2s 是权衡值：更快会让空闲时反复遍历组件树，更慢会让"面板已打开但链接迟到"更明显。
+         * 因注入幂等（见类文档），重复执行无副作用。
+         */
+        private const val POLL_INTERVAL_MS = 2000
     }
 
-    /** 兜底轮询：2s 一次。因注入幂等，重复执行只做一次轻量比对。 */
-    private val timer: Timer = Timer(2000) { onTimerTick() }
+    /**
+     * 兜底轮询。
+     *
+     * 用平台的 [Alarm] 而**不是** `javax.swing.Timer`：官方明确要求禁用 Swing Timer——
+     * 它不受 [Disposable] 管理（项目关闭后仍可能触发）、对模态状态无感知。
+     * 这里以 `this`（[Disposable]）为父，dispose 时未触发的请求自动作废。
+     */
+    private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
 
     init {
         // 启动时确认一次本地化判定（未装语言包时应为 bundleLocale=en）
         LOG.info("EnhanceMerge i18n state: ${EnhanceMergeBundle.localizationDiagnostics()}")
 
-        val disposable = Disposer.newDisposable()
-        Disposer.register(project, disposable)
+        // 本类即 Disposable：注册到 project，dispose 时 Alarm 自动解绑、链接自动摘除
+        Disposer.register(project, this)
 
-        Disposer.register(disposable) {
-            timer.stop()
-            removeInjectedLinks()
-        }
-        timer.start()
-
-        project.messageBus.connect(disposable).subscribe(
+        project.messageBus.connect(this).subscribe(
             ToolWindowManagerListener.TOPIC,
             object : ToolWindowManagerListener {
                 override fun toolWindowShown(toolWindow: ToolWindow) {
@@ -100,14 +112,20 @@ private class LinkInstaller(private val project: Project) {
                 }
             },
         )
+
+        alarm.addRequest({ onTimerTick() }, POLL_INTERVAL_MS)
+    }
+
+    /** 项目关闭：官方要求插件清理自己挂到界面上的东西（详见 [removeInjectedLinks]）。 */
+    override fun dispose() {
+        removeInjectedLinks()
     }
 
     private fun onTimerTick() {
-        if (project.isDisposed) {
-            timer.stop()
-        } else {
-            scanAndInject()
-        }
+        if (project.isDisposed) return
+        scanAndInject()
+        // 排下一次轮询（Alarm 无「周期执行」API，故自续）
+        alarm.addRequest({ onTimerTick() }, POLL_INTERVAL_MS)
     }
 
     /**
@@ -297,11 +315,16 @@ private class LinkInstaller(private val project: Project) {
      */
     private fun resolveWcInfo(panel: Component): WCInfo? {
         return try {
-            val method = panel.javaClass.getMethod("getInfo")
+            val method = panel.javaClass.getMethod(WC_INFO_GETTER)
             method.isAccessible = true
             method.invoke(panel) as? WCInfo
-        } catch (t: Throwable) {
-            LOG.warn("Failed to resolve WCInfo from Subversion WC info panel", t)
+        } catch (e: ReflectiveOperationException) {
+            // 方法被改名/移除：只丢一次点击，不崩
+            LOG.warn("Failed to resolve WCInfo from Subversion WC info panel", e)
+            null
+        } catch (e: LinkageError) {
+            // 类在但签名不兼容（平台重构了 WCInfo）
+            LOG.warn("WCInfo accessor is not linkable on this IDE build", e)
             null
         }
     }

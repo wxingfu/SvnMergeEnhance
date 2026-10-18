@@ -1,6 +1,7 @@
 package com.weixf.svn.mergeenhance.log
 
 import com.intellij.openapi.vcs.versionBrowser.ChangeBrowserSettings
+import com.weixf.svn.mergeenhance.EnhanceMergeBundle
 import org.jetbrains.idea.svn.history.SvnChangeList
 import org.jetbrains.idea.svn.history.SvnCommittedChangesProvider
 import org.jetbrains.idea.svn.history.SvnRepositoryLocation
@@ -93,12 +94,13 @@ class LogPageLoader(
         }
         val provider = context.vcs.committedChangesProvider as? SvnCommittedChangesProvider
         ?: throw IllegalStateException(
-            com.weixf.svn.mergeenhance.EnhanceMergeBundle.message(
+            EnhanceMergeBundle.message(
                 "error.unexpected.changes.provider",
                 context.vcs.committedChangesProvider,
             )
         )
-        return provider.getCommittedChanges(settings, SvnRepositoryLocation(context.sourceUrl), 0)
+        // limit = NO_LIMIT：日期模式要**一次拉完整个区间**（服务端按日期裁剪），分页在内存里做
+        return provider.getCommittedChanges(settings, SvnRepositoryLocation(context.sourceUrl), NO_LIMIT)
     }
 
     // ------------------------------------------------------------ 模式 B
@@ -152,13 +154,12 @@ class LogPageLoader(
 
     companion object {
         /**
-         * 首屏 / 每页条数的**兜底常量**（实际生效值取自 `EnhanceMergeSettings.pageSize`，默认也是它）。
+         * `getCommittedChanges` 的 limit=**不限条数**。
          *
-         * 对齐 TortoiseSVN 的 `NumberOfLogs` 默认值 100
-         * （`CRegDWORD("Software\\TortoiseSVN\\NumberOfLogs", 100)`）：
-         * TortoiseSVN 首次打开日志窗口即取 100 条，并多取 1 条用于判断是否还有更多。
+         * 日期模式必须一次拉完整个区间（服务端按日期裁剪，分页在内存做），
+         * 因此这里不能用任何具体数字——平台约定 0 = 无限制。
          */
-        const val DEFAULT_PAGE_SIZE = 100
+        const val NO_LIMIT = 0
 
         /**
          * 单次翻页最多补几批原始数据（防止极端情况下无休止扫描）。

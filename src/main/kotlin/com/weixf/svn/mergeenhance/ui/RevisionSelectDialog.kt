@@ -37,6 +37,7 @@ import com.weixf.svn.mergeenhance.log.LogFilterField
 import com.weixf.svn.mergeenhance.log.LogPageLoader
 import com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings
 import org.jetbrains.idea.svn.history.SvnChangeList
+import java.util.concurrent.ConcurrentHashMap
 import org.jetbrains.idea.svn.integrate.MergeContext
 import org.jetbrains.idea.svn.integrate.QuantitySelection
 import org.jetbrains.idea.svn.mergeinfo.ListMergeStatus
@@ -122,7 +123,7 @@ class RevisionSelectDialog(
     private val mergeChecker: MergeChecker = OneShotMergeInfoHelper(context)
 
     /** 修订号 → 状态。用 `ConcurrentHashMap`：后台线程写、EDT 读。 */
-    private val mergeStatusMap = java.util.concurrent.ConcurrentHashMap<Long, ListMergeStatus>()
+    private val mergeStatusMap = ConcurrentHashMap<Long, ListMergeStatus>()
 
     /**
      * mergeinfo 是否已就绪。
@@ -169,7 +170,7 @@ class RevisionSelectDialog(
      * → createCenterPanel()，而 Kotlin 属性初始化按**声明顺序**执行——
      * 声明在 init 之后会导致 createCenterPanel 里用到 null/未初始化字段。
      */
-    private val filterPanel = LogFilterPanel { onFilterChanged() }
+    private val filterPanel = LogFilterPanel(disposable) { onFilterChanged() }
 
     /** 当前生效的过滤条件（Load More / 全部显示时复用，避免重复构建）。 */
     private var currentFilter: LogFilter = LogFilter()
@@ -189,9 +190,9 @@ class RevisionSelectDialog(
      * **必须在 `init {}` 之前声明**：`init {}` 会调用 DialogWrapper.init()
      * → createCenterPanel() → createToolbar()，而属性初始化按声明顺序执行。
      */
-    private val loadHundredAction = createLoadMoreAction("action.load.hundred", 100)
+    private val loadHundredAction = createLoadMoreAction("action.load.hundred", LOAD_MORE_SMALL)
 
-    private val loadFiveHundredAction = createLoadMoreAction("action.load.fiveHundred", 500)
+    private val loadFiveHundredAction = createLoadMoreAction("action.load.fiveHundred", LOAD_MORE_LARGE)
 
     /** 「重新整理」：按当前过滤条件重查（对应 TortoiseSVN 同名按钮，已从底部移到顶部）。 */
     private val reloadAction = object : DumbAwareAction(
@@ -289,8 +290,10 @@ class RevisionSelectDialog(
 
                 override fun preDecorate(change: Change, renderer: ChangesBrowserNodeRenderer, showFlatten: Boolean) {
                     if (alreadyMerged.contains(change)) {
+                        // 文案自带方括号（见文案包 label.already.merged）——标点也归文案管，
+                        // 避免在代码里拼 "[...]" 这种半翻译内容
                         renderer.append(
-                            " [${EnhanceMergeBundle.message("label.already.merged")}] ",
+                            " ${EnhanceMergeBundle.message("label.already.merged")} ",
                             SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES,
                         )
                     }
@@ -306,7 +309,7 @@ class RevisionSelectDialog(
         val splitter = Splitter(false, 0.7f).apply {
             firstComponent = listPanel
             secondComponent = changesBrowser
-            dividerWidth = 2
+            dividerWidth = JBUI.scale(SPLITTER_DIVIDER_WIDTH)
         }
 
         root.add(filterPanel, BorderLayout.NORTH)
@@ -320,7 +323,7 @@ class RevisionSelectDialog(
             setExpandableItemsEnabled(false)
             setTableHeader(null)          // 无表头：单列自绘整行，表头纯属噪音（原版同）
             setShowGrid(false)           // 无网格线：与 CommittedChangesBrowser 的树视觉一致
-            rowHeight = 22               // 比默认 16 高一点，容纳复选框 + 图标 + 两行文本不拥挤
+            rowHeight = JBUI.scale(ROW_HEIGHT)   // 比默认高一点，容纳复选框 + 图标 + 两行文本不拥挤
             // 多选间隔：支持 Ctrl/Shift 点选多行（Ctrl+D 看差异、Space 批量勾选都依赖多选）
             selectionModel.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
         }
@@ -337,7 +340,9 @@ class RevisionSelectDialog(
             object : TableViewSpeedSearch<SvnChangeList>(revisionsList) {
                 override fun getItemText(element: SvnChangeList): String? = element.comment
             }
-        } catch (e: Throwable) {
+        } catch (e: LinkageError) {
+            // 新版平台改成了双参构造器：旧签名在链接期就抛 NoSuchMethodError（属 LinkageError，
+            // 不是 Exception）。只捕获 LinkageError，不吞真正的逻辑异常。
             LOG.warn("TableViewSpeedSearch unavailable on this IDE build; speed search disabled", e)
         }
         return ScrollPaneFactory.createScrollPane(revisionsList)
@@ -371,7 +376,7 @@ class RevisionSelectDialog(
             loadHundredAction,
             loadFiveHundredAction,
         )
-        return ActionManager.getInstance().createActionToolbar("SvnEnhanceMergeRevisions", group, true)
+        return ActionManager.getInstance().createActionToolbar(TOOLBAR_PLACE, group, true)
     }
 
     /** 「加载更多」：实时向仓库继续翻页（后台执行，可取消）。 */
@@ -442,8 +447,9 @@ class RevisionSelectDialog(
             private var added = ArrayList<SvnChangeList>()
 
             override fun run(indicator: ProgressIndicator) {
-                indicator.isIndeterminate = false
-                indicator.fraction = 0.0
+                // 总条数未知（取决于仓库有多少匹配项），因此用"不确定进度 + 已加载计数"，
+                // 而不是伪造 fraction（官方要求：无法确定总量时不要编造进度百分比）。
+                indicator.isIndeterminate = true
                 var guard = 0
                 while (!loader.allLoaded && guard++ < MAX_LOAD_ALL_ROUNDS) {
                     indicator.checkCanceled()
@@ -454,7 +460,6 @@ class RevisionSelectDialog(
                     val page = loader.loadNextPage(currentFilter, settings.pageSize)
                     if (page.isEmpty()) break
                     added.addAll(page)
-                    indicator.fraction = (added.size % 100) / 100.0
                 }
             }
 
@@ -696,9 +701,9 @@ class RevisionSelectDialog(
         val selected = selectedChangeLists()
         val paths = if (selected.isEmpty()) 0 else collectChanges(selected).size
         val revisionRange = if (model.rowCount == 0) "-" else {
-            val newest = model.getRowValue(0).number
-            val oldest = model.getRowValue(model.rowCount - 1).number
-            "r$newest – r$oldest"
+            val newest = model.getRowValue(0).number.toString()
+            val oldest = model.getRowValue(model.rowCount - 1).number.toString()
+            EnhanceMergeBundle.message("status.revision.range", newest, oldest)
         }
         if (::statusLabel.isInitialized) {
             statusLabel.text = if (model.rowCount == 0 && currentFilter.isFiltering()) {
@@ -754,7 +759,7 @@ class RevisionSelectDialog(
         }
         private val iconLabel = JLabel().apply {
             isOpaque = false
-            border = javax.swing.BorderFactory.createEmptyBorder(0, 0, 0, 4)
+            border = JBUI.Borders.emptyRight(STATUS_ICON_GAP)
         }
         private val text = SimpleColoredComponent()
         /**
@@ -813,14 +818,14 @@ class RevisionSelectDialog(
                 }
 
                 field(LogFilterField.REVISION, value.number.toString())
-                text.append("  ")
+                text.append(FIELD_SEPARATOR)
                 field(LogFilterField.AUTHOR, value.committerName)
-                text.append("  ")
+                text.append(FIELD_SEPARATOR)
                 field(
                     LogFilterField.DATE,
                     value.commitDate?.let { currentFilter.dateText(it) } ?: "",
                 )
-                text.append("  ")
+                text.append(FIELD_SEPARATOR)
                 field(LogFilterField.MESSAGE, value.comment)
 
                 checkBox.isSelected = wiseSelection.isSelected(value.number)
@@ -885,7 +890,7 @@ class RevisionSelectDialog(
                     if (!isDisposed && !context.project.isDisposed) onListSelectionChanged()
                 }
             }
-            var cnt = 10
+            var cnt = REPAINT_BATCH_SIZE
             for (list in lists) {
                 try {
                     mergeStatusMap[list.number] = toListMergeStatus(mergeChecker.checkList(list))
@@ -893,7 +898,7 @@ class RevisionSelectDialog(
                     LOG.warn("Failed to check merge status for r${list.number}", e)
                 }
                 if (--cnt <= 0) {
-                    cnt = 10
+                    cnt = REPAINT_BATCH_SIZE
                     repaintTable()
                 }
             }
@@ -924,6 +929,31 @@ class RevisionSelectDialog(
          * 只有"平台判定到底"失灵时才会撞到这个数。
          */
         const val MAX_LOAD_ALL_ROUNDS = 100
+
+        /**
+         * 「+N」两个动作的每次追加条数（对齐原版 `ToBeMergedDialog.MoreXAction`）。
+         * 与设置里的「每页条数」无关：那两个按钮是固定步进。
+         */
+        const val LOAD_MORE_SMALL = 100
+        const val LOAD_MORE_LARGE = 500
+
+        /** 行高（经 JBUI 缩放）：比默认 16 高一点，容纳复选框 + 状态图标 + 文本。 */
+        const val ROW_HEIGHT = 22
+
+        /** 左右分栏的分隔条宽度（经 JBUI 缩放）。 */
+        const val SPLITTER_DIVIDER_WIDTH = 2
+
+        /** 状态图标与右侧文本的间距（经 JBUI 缩放）。 */
+        const val STATUS_ICON_GAP = 4
+
+        /** 行内各字段（版本号/作者/日期/说明）之间的分隔文本。 */
+        const val FIELD_SEPARATOR = "  "
+
+        /** 每算完多少行就重绘一次（避免每行都 repaint）。 */
+        const val REPAINT_BATCH_SIZE = 10
+
+        /** 工具栏的 place 标识：ActionToolbar 用它区分"同组件上的多个工具栏"。 */
+        const val TOOLBAR_PLACE = "SvnEnhanceMergeRevisions"
 
         /**
          * 命中片段样式：加粗。

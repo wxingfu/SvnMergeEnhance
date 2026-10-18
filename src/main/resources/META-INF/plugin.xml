@@ -8,12 +8,15 @@
      没有这条 depends 时，插件会在 SVN 插件之前加载，运行期引用 svn4idea 类会 ClassNotFound。
   2. <depends>com.intellij.modules.vcs</depends>：声明 VCS 能力依赖，
      保证插件只在具备 VCS 框架的 IDE（IDEA 等）中加载，避免装进无 VCS 的轻量 IDE 后入口失效。
-  3. since-build="221" / until-build="252.*"：支持 IDEA 2022.1 – 2025.2。
+  3. since-build="221" / until-build="262.*"：支持 IDEA 2022.1 – 2026.2.3。
      until-build 是"已验证上限"而非"测试上限"：svn4idea 的 API 不在平台兼容承诺内，
-     更高版本（2026.x）须用 `gradlew verifyOnIde -PideaVersion=<版本>` 回归通过后再放开，
-     依据与回归方法见 README「兼容性说明」与 .codebuddy/rules 的 svn4idea API 兼容性基线。
-  4. <resource-bundle>：让 EP 的 key="..." 属性与 Configurable.getDisplayName() 共用同一套
-     本地化文案（未装语言包 = 英文基包，装了中文语言包 = _zh_CN）。
+     2026.2.3 已用 `runPluginVerifier` 比对 IC-2022.1 / IC-2026.2.3 两端二进制 API（均 Compatible）后放开；
+     注：2026.x 无法用 verifyOnIde 做「重新编译 + 沙箱」回归（Kotlin 版本与 IPGP 1.x 均不支持 2026 平台），
+     更高版本（2026.3+）仍须先回归再提高，方法与依据见 README「兼容性说明」与
+     .codebuddy/rules 的 svn4idea API 兼容性基线。
+ 4. 文案一律由 EnhanceMergeBundle 自行加载（语言包感知：未装语言包强制英文基包，
+     装了中文语言包才用 _zh_CN），**不**声明 `<resource-bundle>`——声明它会让平台改用
+     DynamicBundle 的 Locale.getDefault() 解析，与上述判定冲突（详见下方注释）。
 -->
 <idea-plugin>
     <!-- 插件唯一标识：插件市场 / 本地安装均以此区分 -->
@@ -99,8 +102,11 @@ Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.<
     <depends>com.intellij.modules.vcs</depends>
     <depends>Subversion</depends>
 
-    <!-- 本插件自绘界面的文案（英文 + 中文） -->
-    <resource-bundle>messages.EnhanceMergeBundle</resource-bundle>
+    <!--
+      刻意**不**声明 <resource-bundle>：本插件的文案由 EnhanceMergeBundle 自行加载
+      （语言包感知，见该类文档），不走平台的 DynamicBundle 解析；
+      声明它反而会让 EP 的 key= 绕开这套判定（见下方 applicationConfigurable 注释）。
+    -->
 
     <!-- 最低兼容 IDEA 2022.1（build 221） -->
     <idea-version since-build="221"/>
@@ -118,15 +124,16 @@ Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.<
           设置页（T9 / Spec R11）：Settings → Version Control → SVN Enhance Merge。
           应用级注册：与内置 Subversion 的 SvnConfigurable 同处 Version Control 分组，
           且 projectConfigurable 的实例由平台无参构造、拿不到 Project 句柄（见 EnhanceMergeSettings 注释）。
-          标题本地化：用 `key` 引用插件 bundle（平台 ConfigurableEP.getDisplayName() 语义为
-          messageOrDefault(bundle, key, displayName)，即 key 优先、displayName 兜底），
-          与原版 svn4idea 的 `key="configurable.name.svn.general"` 做法一致。
+          **故意不写 key / displayName**：ConfigurableEP 只要带 key 或 displayName，
+          标题就由平台按 `<resource-bundle>` 解析（`ConfigurableWrapper.getDisplayName()` 里
+          EP 优先），走的是 DynamicBundle 的 `Locale.getDefault()` 逻辑——在"中文系统 + 英文 IDE
+          且未装语言包"的机器上会显示中文，与本插件其余界面的语言判定（EnhanceMergeBundle
+          的"语言包感知"）不一致。两个都不写时平台回退到 `Configurable.getDisplayName()`，
+          即我们自己的语言包感知实现，标题语言因此始终与对话框一致。
         -->
         <applicationConfigurable
             parentId="vcs"
             id="com.weixf.svn.mergeenhance.settings"
-            key="settings.display.name"
-            displayName="SVN Enhance Merge"
             instance="com.weixf.svn.mergeenhance.settings.EnhanceMergeConfigurable"/>
         <applicationService serviceImplementation="com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings"/>
     </extensions>
