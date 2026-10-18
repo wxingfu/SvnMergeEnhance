@@ -28,16 +28,28 @@ plugins {
 group = "com.weixf.svn.mergeenhance"
 version = "1.0.0"
 
+/** 是否在 CI 环境（GitHub Actions 等会自动设置 `CI=true`）；用于跳过仅限国内可用的镜像仓库。 */
+private val isCiEnv: Boolean
+    get() = System.getenv("CI")?.toBoolean() == true
+
 repositories {
     // 顺序有意义：先 JetBrains（ideaIC 只在这里发布，国内镜像均无），
     // 再阿里云镜像（加速其它依赖），最后官方源兜底。
     // ideaIC 的 Gradle 元数据缓存过期后必须能从 JetBrains 仓库重新解析，故它排第一。
     maven { url = uri("https://cache-redirector.jetbrains.com/www.jetbrains.com/intellij-repository/releases") }
     maven { url = uri("https://cache-redirector.jetbrains.com/www.jetbrains.com/intellij-repository/snapshots") }
-    maven { url = uri("https://maven.aliyun.com/repository/google") }
-    maven { url = uri("https://maven.aliyun.com/repository/central") }
-    maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
-    maven { url = uri("https://maven.aliyun.com/repository/public") }
+
+    // ⚠️ 阿里云镜像**只在非 CI 环境**下启用：它是给国内网络加速用的，而 GitHub Actions
+    // runner 在境外访问会失败（实测 maven.aliyun.com 对 verifier-cli-1.410.pom 返回
+    // HTTP 502 Bad Gateway，且 Gradle 没继续往下走到 mavenCentral()，直接
+    // "Could not resolve org.jetbrains.intellij.plugins:verifier-cli:1.410" → BUILD FAILED）。
+    // `CI` 环境变量由 GitHub Actions（以及多数 CI 平台）自动设置。
+    if (!isCiEnv) {
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/central") }
+        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
+    }
     gradlePluginPortal()
     google()
     mavenCentral()

@@ -30,7 +30,12 @@ alwaysApply: false
 - Gradle 运行 JDK：`org.gradle.java.home=D:/softwares/Java/jdk-11.0.32.1`（JDK 8 无法构建 since-2022 插件）。
 - Kotlin/Java 目标字节码 **11**（同时覆盖 2022.1/2.2 的 JBR11 与 2022.3+ 的 JBR17）。
 - `GRADLE_USER_HOME=G:\GradleRepository`；ideaIC 解压目录固定 `intellij.ideaDependencyCachePath=G:/GradleRepository/idea`。
-- 构建/验证命令：`gradlew buildPlugin`（产出 `build/distributions/*.zip`）、`gradlew test`（53 个用例）、
+- 构建/验证命令：- **仓库列表与 CI：阿里云镜像仅本机启用**：`build.gradle.kts` 根据 `CI` 环境变量判断。
+  镜像是给国内网络加速的，GitHub runner 在境外访问会失败（实测对 `verifier-cli:1.410`
+  返回 502），且 Gradle 不会继续往下走到 `mavenCentral()`，直接报
+  `Could not resolve org.jetbrains.intellij.plugins:verifier-cli:1.410` → BUILD FAILED。该产品只在 Maven Central 上（探针 HTTP 200，
+  JetBrains 仓与阿里云均 404），所以 CI 上必须跑掉镜像才能解析到。
+`gradlew buildPlugin`（产出 `build/distributions/*.zip`）、`gradlew test`（53 个用例）、
   `gradlew verifyOnIde -PideaVersion=<版本>`（切版本启沙箱 + 扫插件异常日志，报 PASS/FAIL）、
   `gradlew runPluginVerifier`（官方 Plugin Verifier，比对二进制 API；`-PverifierLocalIde=<已解压 ideaIC 目录>` 可复用本地 SDK 不下载 IDE）、
   `gradlew runIde`（沙箱人工实测）。
