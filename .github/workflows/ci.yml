@@ -47,9 +47,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
 
       - name: Run IntelliJ Plugin Verifier
-        # 同样兜底 chmod；两端 IDE 由 build.gradle.kts 的 ideVersions 指定并自动下载
-        #（上限用 IU-2026.2.3：2026 起 Community/Ultimate 合并，code=IC 已无条目）
-        run: chmod +x gradlew && ./gradlew runPluginVerifier --stacktrace
+        # 同样兜底 chmod。**只校验下限 IC-2022.1**：
+        # 1) 2026 起 Community/Ultimate 合并，上限要写 IU-2026.2.3（code=IC 已 404）；
+        # 2) 但两端一起下会撑爆 runner 磁盘（2022.1 包 814MB + 2026.2.3 包 1.5GB，
+        #    再加解压与缓存，实测会报 Insufficient space for shared memory file）。
+        # 上限回归改由本机 `-PverifierLocalIde=<ideaIC-2026.2.3 目录>` 完成，见 README。
+        run: chmod +x gradlew && ./gradlew runPluginVerifier -PverifierIdeVersions=IC-2022.1 --stacktrace
 
       - name: Upload verifier report
         uses: actions/upload-artifact@v4

@@ -409,9 +409,10 @@ deprecation 会把构建卡死）。
 - 二进制 API 校验（官方 Plugin Verifier，比对插件与目标 IDE 的类/方法签名）：
 
   ```bash
-  # 自动下载支持范围两端（IC-2022.1 / IU-2026.2.3）
-  # 注意 2026.x 必须写 IU：IDEA 2026 起 Community 与 Ultimate 合并为统一发行版，
-  # JetBrains 下载接口已无独立的 ideaIC-2026.x 条目（code=IC 返回 404）
+  # 自动下载支持范围两端（IC-2022.1 / IU-2026.2.3）。
+  # 两个坑：① 2026.x 必须写 IU（IDEA 2026 起 Community/Ultimate 合并，
+  #   code=IC 已 404）；② 两端一起下需约 8GB 磁盘，CI runner 会撑爆。
+  # 需要只校验一端时用 -PverifierIdeVersions=IC-2022.1（CI 即采此法）
   ./gradlew runPluginVerifier
 
   # 复用本机已解压的 SDK，不重复下载（逗号分隔多个目录）

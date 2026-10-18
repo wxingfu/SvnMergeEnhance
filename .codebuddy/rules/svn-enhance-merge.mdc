@@ -284,6 +284,9 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   用 `-PverifierLocalIde="G:/GradleRepository/idea/ideaIC-2022.1,G:/GradleRepository/idea/ideaIC-2026.2.3"`
   （**本机路径**：指向 Maven 仓库解压的 ideaIC 目录，2026.2.3 也能取到）
   **CI 路径**（无 localIde，走 JetBrains Data Services 下载）：上限必须写 `IU-2026.2.3` —— 2026 起 Community/Ultimate 合并为统一发行版，
+  但两端一起下会撑爆 GitHub runner 磁盘（2022.1 包 814MB + 2026.2.3 包 1.5GB，再加解压与缓存，
+  实测报 `Insufficient space for shared memory file` + download 失败）；CI 因此传 `-PverifierIdeVersions=IC-2022.1`
+  只校验下限（也是 since-build 闸门），上限回归留给本机 localIde 通道。
   接口已无独立的 ideaIC-2026.x 条目（实测 `code=IC&version=2026.2.3` → HTTP 404，`code=IU/IIU` → 302 指向
   `idea-2026.2.3.tar.gz`），写 IC 会报 `IDE 'IC-2026.2.3' cannot be downloaded`。
   （逗号分隔多目录）实跑：**IC-221.5080.210 与 IC-262.10968.63 两端均 Compatible**，2026.2.3 侧 0 兼容性问题

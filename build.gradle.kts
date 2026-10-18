@@ -149,9 +149,17 @@ tasks.named<RunPluginVerifierTask>("runPluginVerifier") {
         // （实测 code=IC&version=2026.2.3 → HTTP 404，而 code=IU / IIU → 302 指向
         // download.jetbrains.com/idea/idea-2026.2.3.tar.gz），IPGP 由此报
         // "IDE 'IC-2026.2.3' cannot be downloaded"。
-        // 注意这只影响本任务的 IDE **下载**通道（Maven 仓库里的 ideaIC:2026.2.3 仍在，
-        // 故本机用 -PverifierLocalIde 指向已解压目录的回归不受影响）。
-        ideVersions.set(listOf("IC-2022.1", "IU-2026.2.3"))
+        //
+        // ⚠️ 两端一起下会撑爆 CI 磁盘（2022.1 包 814MB / 解压约 2.5GB，2026.2.3 包 1.5GB /
+        // 解压 4GB+，再加 Gradle 与 IDE 缓存），实测 GitHub runner 会写不下并报
+        // "Insufficient space for shared memory file" + download 失败。
+        // 故开放 -PverifierIdeVersions=<逗号分隔> 覆盖：CI 只校验下限（也是 since-build 闸门），
+        // 上限由本机 -PverifierLocalIde（指向 Maven 仓库解压的 ideaIC-2026.2.3）回归。
+        ideVersions.set(
+            providers.gradleProperty("verifierIdeVersions")
+                .map { raw -> raw.split(',').map { it.trim() }.filter { it.isNotEmpty() } }
+                .getOrElse(listOf("IC-2022.1", "IU-2026.2.3"))
+        )
     }
     // 只对「兼容性硬问题」失败（缺类、签名不符）。deprecated / 内部 API 等软问题只报告不阻断，
     // 否则 bundled 插件 API 的 deprecation 会把构建卡死（svn4idea 本身就在演进）。
