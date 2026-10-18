@@ -1,0 +1,203 @@
+---
+description: SVN Enhance Merge 插件（SvnMergeEnhance）的构建与实现约束：JDK 11、IDEA 2022.1 IC SDK、必须显式依赖 Subversion 插件、禁用 SVNKit、取日志必须直连仓库
+globs:
+  - "src/**/*.kt"
+  - "src/main/resources/META-INF/**"
+  - "build.gradle.kts"
+  - "settings.gradle.kts"
+  - "gradle.properties"
+alwaysApply: false
+---
+
+# SVN Enhance Merge 插件（SvnMergeEnhance）约束
+
+在 IDEA 内置 Subversion 插件之上提供并列的第二种合并入口「Enhance Merge…」（分支选择 → 合并方式 → 版本选择 → 合并）。
+**不 fork、不修改 `plugins/svn4idea` 源码**。
+
+## 参考源码路径（本机固定，勿再搜索别处）
+
+- **TortoiseSVN 源码**：`G:\gitDownload\TortoiseSVN`
+  - 过滤语义：`src\TortoiseProc\LogDialog\LogDlgFilter.cpp` / `LogDlgFilter.h`
+  - 日志窗口与过滤条布局、初始条数：`src\TortoiseProc\LogDialog\LogDlg.cpp` / `LogDlg.h`
+  - 「更多/Show all」：`LogDlg.cpp` 的 `OnClickedNext` / `OnBnClickedNext`
+- **原版 SVN 插件（svn4idea）源码**：`G:\gitDownload\svn4idea`
+  - 版本选择对话框 / +100、+500 动作：`plugins\svn4idea\src\org\jetbrains\idea\svn\integrate\ToBeMergedDialog.java`
+  - 分页取日志：同目录 `MergeCalculatorTask.java`、`history\SvnCommittedChangesProvider.java`
+  - 合并执行：同目录 `SvnIntegrateChangesTask.java`、`ChangeListsMergerFactory.java`
+
+## 构建与环境（不可偏离）
+
+- Gradle 运行 JDK：`org.gradle.java.home=D:/softwares/Java/jdk-11.0.32.1`（JDK 8 无法构建 since-2022 插件）。
+- Kotlin/Java 目标字节码 **11**（同时覆盖 2022.1/2.2 的 JBR11 与 2022.3+ 的 JBR17）。
+- `GRADLE_USER_HOME=G:\GradleRepository`；ideaIC 解压目录固定 `intellij.ideaDependencyCachePath=G:/GradleRepository/idea`。
+- 构建/验证命令：`gradlew buildPlugin`（产出 `build/distributions/*.zip`）、`gradlew test`（46 个纯逻辑用例）、
+  `gradlew verifyOnIde -PideaVersion=<版本>`（切版本启沙箱 + 扫插件异常日志，报 PASS/FAIL）、
+  `gradlew runPluginVerifier`（官方 Plugin Verifier，比对二进制 API；`-PverifierLocalIde=<已解压 ideaIC 目录>` 可复用本地 SDK 不下载 IDE）、
+  `gradlew runIde`（沙箱人工实测）。
+- **改了代码必须重新 `buildPlugin` 并重装 zip**：`plugin.xml` 只在插件加载时读一次。
+  若报 `Could not copy file ... instrumented-...jar`，是**上一次沙箱 IDE 还在运行**锁住了文件：
+  先 `gradlew verifyOnIde "-PverifyAutoClose=true"`，或杀 `*idea-sandbox*` 的 java 进程，再打包。
+- 离线参考源码：`G:\gitDownload\svn4idea`（svn4idea 最新版，**不在本仓库内、不参与构建**，仅用于核对公开 API 与兼容性基线）。
+- 构建/同步过程中**不要中断**：ideaIC 解压一旦被打断会产生残缺 jar，导致沙箱 IDE 报 `Unknown element: postStartupActivity` 与一串 `requires plugin 'com.intellij.modules.java'`。出现该问题时删除 `G:\GradleRepository\idea\ideaIC-2022.1` 后重跑 `gradlew cleanIdea setupDependencies` 完整解压。
+
+## 依赖边界（硬约束）
+
+- **禁止引入 SVNKit** 或任何外部 Maven 坐标；所需类全部由 IntelliJ SDK 提供。
+- `intellij { version.set("2022.1"); type.set("IC"); plugins.set(listOf("Subversion")); updateSinceUntilBuild.set(false) }`
+  —— **必须**显式把捆绑的 Subversion 插件加入 `plugins`，否则 `import org.jetbrains.idea.svn.*` 编译期找不到类。
+- `patchPluginXml { sinceBuild.set("221"); untilBuild.set("252.*") }`（221 = IDEA 2022.1 首个 build；252.* = 已验证上限 2025.2）。
+- `plugin.xml`：`<depends>com.intellij.modules.vcs</depends>` + `<depends>Subversion</depends>` + `<idea-version since-build="221"/>`。
+- **Kotlin stdlib 不得打包**：`gradle.properties` 必须保留 `kotlin.stdlib.default.dependency=false`。
+  否则 `verifyPluginConfiguration` 报 stdlib 冲突（官方警告），zip 会多背 1.8MB 的 stdlib + `annotations.jar`。
+  运行时 stdlib 由 IDE 核心 `lib/3rd-party-rt.jar` 提供（已实测 2022.1 沙箱 PASS；注意 2022.1 **没有** `kotlin-stdlib.jar`，
+  别被 `plugins/Kotlin/lib/` 下的 `kotlinc/lib/` 误导）。
+- **包级文件（pluginIcon.svg / pluginIcon_dark.svg / THIRD-PARTY-LICENSES.txt）必须位于插件目录根部**。
+  IPGP 1.x 会把 `src/main/resources` 全部打进 `lib/*.jar`（图标落到 jar 内 `META-INF/`），Marketplace 识别不到；
+  正确做法是往 `buildPlugin`（它本身就是 `Zip`，IPGP 已 `into(pluginName)`）追加：
+  ```kotlin
+  tasks.named<BuildPluginTask>("buildPlugin") {
+      from("src/main/resources") { include("pluginIcon.svg", "pluginIcon_dark.svg", "THIRD-PARTY-LICENSES.txt") }
+  }
+  ```
+  （挂到 `prepareSandbox` 上**无效**——它的 copy 目标是 `destinationDir/pluginName`，`from` 会落到 `plugins/` 根。）
+- **第三方库必须声明许可**：`LGoodDatePicker`（MIT）用于过滤栏日期控件，其 jar 内**没有** LICENSE 文件，
+  故许可全文放在 `src/main/resources/THIRD-PARTY-LICENSES.txt` 并随包分发。
+- 上架元数据（`<vendor>` 的 email/url、`<change-notes>`、`pluginIcon*.svg`）已就绪，见 `plugin.xml`。
+
+## SVN API 用法（复用公开 API，勿用内部类）
+
+- 取日志（**直连仓库、分页、非全量**）：`MergeCalculatorTask.loadChangeLists(mergeContext, beforeRevision, size)`
+  → `Pair<List<SvnChangeList>, Boolean>`；首屏 `beforeRevision=-1`、`size=100`（与 TortoiseSVN `NumberOfLogs` 默认值一致），翻页游标 = 上一页末条修订号。
+  底层为 `SvnCommittedChangesProvider.getCommittedChangesWithMergedRevisions(settings, location, maxCount, consumer)`，
+  最终落到 `HistoryClient.doLog(...)`；**禁止** `limit=0` 全量拉取，**禁止**走 `CachedProvider`/`LoadedRevisionsCache`。
+  失败须可重试，关闭返回上一步且无副作用。
+- 分支枚举：**直接复用** `SelectBranchPopup.showForBranchRoot(project, root, BranchSelectedCallback, title, anchor)`（public），
+  回调里用 `SvnBranchConfigurationNew.getRelativeUrl(url)` + `Url.appendPath(rel, false)` 换算目标分支对应 URL。
+  **禁止**引用 internal 的 `SvnBranchConfigurationManager`。
+- 执行合并：`SvnIntegrateChangesTask(vcs, WorkingCopyInfo(path,true), ChangeListsMergerFactory(lists,false,false,true), sourceUrl, title, false, branchName).queue()`；
+  连续段压缩与 `Revision.of(lowest-1) → Revision.of(highest)` 由原版 `Merger` 负责，冲突/进度/VFS 刷新一并复用。
+  合并前须 `FileDocumentManager.getInstance().saveAllDocuments()`（对齐原版 `QuickMerge.execute`）。
+- **进度条、冲突解决、结果展示全部由原版负责**：`SvnIntegrateChangesTask.afterExecution()` 内 `ResolveWorker` 标记/解决冲突、`showUpdateProjectInfo` 弹出更新信息树，**不额外弹窗、不引入自创提示**（原版 `QuickMerge` 也无"已开始合并"提示）。。
+- 上下文定位：`SvnVcs.getInstance(project)` + `getAllWcInfos()`，`destination = wcInfo.getRootInfo().getIoFile()`。
+- 合并执行本身由本插件 `MergeExecutor.merge` 负责（直接 `queue` 原版 `SvnIntegrateChangesTask`，对齐 `QuickMerge.newIntegrateTask`），**不得调用** `QuickMerge.execute/merge/mergeAll/selectMergeVariant` 等流程方法。
+- 「合并前本地改动提示」必须与原版一致：允许实例化 `QuickMerge` + `QuickMergeInteractionImpl` **仅作为** `LocalChangesPromptTask` 的宿主（提供 `MergeContext` / `Interaction` / `runInBackground`），然后 `LocalChangesPromptTask(quickMerge, selected, callback).run()`；`callback` 里调用本插件 `MergeExecutor.merge`。这是复刻原版 `QuickMerge.merge(List)` 的前置步骤，不视为「复用 QuickMerge 合并流程」。
+
+## 入口与包
+
+- 包：`com.weixf.svn.mergeenhance`。
+- **唯一入口**：「Version Controls」→「Subversion Working Copies Information」面板中，
+  每个工作副本的「Merge From…」下方注入的 **Enhance Merge…** 链接（运行时 UI 注入，不改 svn4idea 源码）。
+- **不再注册**任何 `<action>`：不挂 `SubversionGroup` / `Vcs.Operations.Popup`（2026-10-18 决策）。
+  `EnhanceMergeAction` **已改为普通类**（不再继承 `AnAction`）：它从未注册到任何菜单，
+  继承 `AnAction` 会留下永不执行的 `update()`/`actionPerformed()` 死代码。
+  注入链接（`WcInfoLinkInjector`）直接调用其 `performFor(project, wcInfo, anchor)`；
+  "仅 SVN 工作副本下可用"由入口链接只出现在 SVN 面板 + `MergeFlow.start` 的双保险保证。
+- 入口实现类：文件 `wcinfo/WcInfoLinkInjector.kt`（public `WcInfoLinkInjector` = `StartupActivity.DumbAware`，
+  plugin.xml 注册的 implementation），内含 private `LinkInstaller` 持有 Timer/messageBus。
+  dispose 时除停 Timer 外，**还要移除自己注入的 `LinkLabel`**（`removeInjectedLinks()`），
+  官方要求插件清理自己挂到界面上的东西。
+- 用户可见字符串走 `messages/*.properties` bundle，不硬编码。
+- **本地化必须语言包感知**（`EnhanceMergeBundle` 已实现，勿改回 `extends DynamicBundle` 默认解析）：
+  - `DynamicBundle.findLanguageBundle() != null` ⇒ 已装语言包，用 `DynamicBundle.getLocale()` 精确匹配；
+  - 否则用 **`Locale.ROOT`** 取基包（英文）。
+  - **JDK 陷阱（实测）**：在 `Locale.getDefault()=zh_CN` 的机器上，
+    `getBundle(base, Locale.ENGLISH, …)` 仍会返回 `_zh_CN`；只有 `Locale.ROOT` 稳定拿基包。
+  - properties 必须按 **UTF-8** 解码（`ResourceBundle` 默认 ISO-8859-1）。
+
+## 线程与生命周期（官方规范，硬要求）
+
+- Swing 操作只在 EDT；`LinkInstaller.scanAndInject()` 用 `assertIsDispatchThread()` 主动断言（不写防御性静默）。
+- 耗时 / IO（svn log、mergeinfo）一律 `Task.Backgroundable`（可取消）或 `executeOnPooledThread`。
+- **所有异步回调**（`Task.onSuccess/onThrowable/onFinished`、`invokeLater` 块）必须判
+  `isDisposed || project.isDisposed`；`invokeLater` 的判定要写在 **lambda 内**（排队期间对话框可能已被关闭）。
+- 跨线程共享状态：`mergeStatusMap` 用 `ConcurrentHashMap`；`mergeCheckerPrepared` 用 `@Volatile` +
+  `mergeCheckerLock` 互斥，保证 `prepare()` 只执行一次（`OneShotMergeInfoHelper` 缓存只能初始化一次）。
+- 资源释放：Timer / messageBus 订阅 / 注入到别人容器里的组件，都要在 dispose 时清理；
+  快捷键注册必须传 `Disposable`（传 null 会随组件树泄漏）。
+- 按键消费（`e.consume()`）必须写在 `keyPressed`——写在 `keyReleased` 不起作用。
+- 纯图标按钮必须给 `accessibleContext.accessibleName`（官方无障碍要求）。
+
+## 实现状态与文档
+
+**v2 已全部实现并通过官方校验**（2026-10-18）。v1 的 `BranchSelectionDialog`、`MergeMethodSelectionDialog`、
+`RevisionLogDataSource`、`RevisionItem`、`SvnRevisionMergeExecutor`、`WcInfoPanelLinkInjector` 均已删除。
+
+实际类清单：
+
+- `wcinfo/WcInfoLinkInjector`（入口 `StartupActivity.DumbAware`，内含 private `LinkInstaller`）、`EnhanceMergeAction`（普通类）、`EnhanceMergeBundle`
+- `flow/MergeFlow`、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`、`ui/LogFilterPanel`
+- `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`
+- `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
+
+单测：`LogFilterTest`(25) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) = **46**。
+
+### 2026-10-18 官方规范合规整改（已完成）
+
+| 项 | 处理 |
+|---|---|
+| 后台任务回调无 dispose 守卫 | `loadMore`/`loadAll`/`onFilterChanged` 的三个回调 + 所有 `invokeLater` 均加 `isDisposed \|\| project.isDisposed`（守卫写在 lambda 内） |
+| `mergeCheckerPrepared` 跨线程不可见 | `@Volatile` + `mergeCheckerLock` 互斥，保证 `prepare()` 只执行一次；用 `preparedHere` 保持"仅首次刷新右栏"语义 |
+| 空格键 `consume()` 写在 keyReleased 无效 | 消费移到 `keyPressed`，切换逻辑留在 `keyReleased`（避免按住空格连翻） |
+| Kotlin stdlib 被打包（官方警告） | `kotlin.stdlib.default.dependency=false`，zip 2.10MB → 434KB |
+| 缺 pluginIcon / vendor / change-notes / 第三方许可 | 已补齐（见「依赖边界」） |
+| 死代码 | 删 `LogFilter.dateMatchTexts`、两份 properties 的 `filter.by.tooltip`；`EnhanceMergeAction` 去 `AnAction` 化 |
+| 类名与文件名错位 | 文件改名 `WcInfoLinkInjector.kt`，private 类改名 `LinkInstaller` |
+| 快捷键注册传 null Disposable | 改传对话框自身的 `disposable` |
+| 关闭项目时残留注入的链接 | dispose 时 `removeInjectedLinks()` 摘掉自己的 `LinkLabel` |
+| 过滤栏选项不持久化 | `EnhanceMergeSettings` 增 4 个字段（存字段 id 字符串而非枚举名），过滤栏改动即写回；设置页不做 UI（属"顺手记住"的交互偏好） |
+| 无障碍 | 纯图标清除按钮加 `accessibleContext.accessibleName` |
+
+**有意未改**：`getDimensionServiceKey` 无法按项目隔离——带 `Project` 参数的重载是 IDEA 2023.2+ 才有，
+2022.1 只有无参版本，用了会破坏 `since-build=221`。已在代码注释中写明。
+
+**待决事项（暂不动）**：入口靠反射调`WorkingCopyInfoPanel.getInfo()` + 2s 定时扫组件树注入 UI，
+不符合官方"仅用公开 API"要求（Marketplace 审核风险）。是否改走官方 `ToolWindowFactory` / 扩展点，
+待"调研官方 ToolWindowFactory + 最终是否上架 Marketplace"结论后再定。
+
+- 完整设计文档索引：
+  - 方案总览（v2）`.codebuddy/plan/RevisionSelect-StandalonePlugin-plan.md`
+  - 需求规格（v2）`.codebuddy/specs/add-revision-select-merge-ui/spec.md`
+  - 任务拆解（v2）`.codebuddy/specs/add-revision-select-merge-ui/tasks.md`
+  - 验收清单（v2）`.codebuddy/specs/add-revision-select-merge-ui/checklist.md`
+
+## v2 关键复用约定（已从 svn4idea 源码核实可见性）
+
+- 分支弹窗：`SelectBranchPopup.showForBranchRoot(...)`（public）→ 回调给 `SvnBranchConfigurationNew`（public）。
+- 分页日志：`MergeCalculatorTask.loadChangeLists(ctx, beforeRevision, size)`（public static），实时直连、非缓存。
+- 列表渲染：`TableView` + `ListTableModel` + `CommittedChangeListRenderer` + `CommittedChangesBrowser` + `Splitter`。
+- 勾选语义：`QuantitySelection<Long>`（public）。
+- 合并执行：`SvnIntegrateChangesTask` + `ChangeListsMergerFactory`（均 public），含冲突解决与 VFS 刷新。
+- 已合并状态（T8，已实现，**默认开启、无开关**）：复用原版 `OneShotMergeInfoHelper(context)`（`MergeChecker` 接口实现）+ `ListMergeStatus`，**行为对齐 `ToBeMergedDialog.refreshListStatus`**：对话框 `init` 即触发后台计算，分批对每个 `SvnChangeList` 调 `mergeChecker.checkList()`，经 `toListMergeStatus`（`MERGED→MERGED` / `NOT_EXISTS→ALIEN` / 其余→`REFRESHING`）映射后存入 `mergeStatusMap`；列表每行在 `RevisionCellRenderer` 中用 `status.icon` 显示状态图标（已合并 / 外来 / 刷新中）。图标与语义与原版完全一致，**不得自创状态判定或图标**。原 spec 的「开关默认关闭」已按需求改为默认开启。
+- T8 右栏文件标记：`CommittedChangesBrowser.setChangeNodeDecorator(...)` 中 `preDecorate` 对 `alreadyMerged.contains(change)` 追加 `[Already merged]`；集合在 `onListSelectionChanged()` 里用 `mergeChecker.getNotMergedPaths(list)` 的**补集**填充（对齐 `ToBeMergedDialog.getAlreadyMergedPaths`）。`prepare()` 完成后需再触发一次 `onListSelectionChanged()`，否则首次选中时标记缺失。
+- T8 布局约束：**复选框必须位于单元格最左（`BorderLayout.WEST`）**，状态图标放其后（`JLabel` + 右侧空边），因为 `installCheckboxClick()` 的命中区是 `Rectangle(cell.x, cell.y, checkboxWidth, cell.height)`（原版同构）。若把图标放在复选框左侧，鼠标点击会与视觉错位而无法勾选。
+- 禁用：`SvnBranchConfigurationManager`（internal）、`QuickMerge`、`ToBeMergedDialog`（不可改造）。
+- 禁止写入 `SvnConfiguration`（会影响原版 Merge From 行为）。
+
+## svn4idea API 兼容性基线（2022.1 ↔ 最新源码，已逐一 javap 比对）
+
+以下 API 在 IDEA 2022.1 与最新 svn4idea 源码中**签名完全一致**，是本插件跨版本运行的依赖面：
+`MergeContext(SvnVcs, Url, WCInfo, String, VirtualFile)`、
+`SvnIntegrateChangesTask(SvnVcs, WorkingCopyInfo, MergerFactory, Url, String, boolean, String)`、
+`ChangeListsMergerFactory(List, boolean, boolean, boolean)`、
+`LocalChangesPromptTask(QuickMerge, List<SvnChangeList>, Runnable)`、
+`QuickMerge(MergeContext, QuickMergeInteraction)`、`QuickMergeInteractionImpl(MergeContext)`、
+`OneShotMergeInfoHelper(MergeContext)`、`MergeChecker(prepare/checkList/getNotMergedPaths)`、
+`MergeCalculatorTask.loadChangeLists(MergeContext, long, int)`(static)、
+`SvnChangeList(getNumber/getComment/getAffectedPaths/getByPath)`、
+`SelectBranchPopup.showForBranchRoot(Project, VirtualFile, BranchSelectedCallback, String[, Component])`、
+`SvnBranchConfigurationNew(getRelativeUrl 等)`、`QuantitySelection(boolean)`、
+`SvnRepositoryLocation(String/Url)`、`WCInfo(getPath/getUrl/getRepoUrl/getRootInfo)`。
+
+- 升级 IDE 基线时**必须重新核对上述签名**；`SvnBranchConfigurationNew` 已由 Java 重写为 Kotlin
+  （`getRelativeUrl` 返回可空，调用处已防护）。
+- 平台侧唯一已知变化：`com.intellij.ui.TableViewSpeedSearch` 新版为双参构造
+  （本插件用 2022.1 单参，已加 try-catch 降级）。
+- `until-build=252.*`（2025.2）；更高版本须回归通过后再放开。
+  一键回归：`gradlew verifyOnIde -PideaVersion=<版本>`（内部按 OS 调 `scripts/verify-plugin.ps1|sh`：自动切 SDK 启沙箱、轮询就绪、扫插件异常日志，报 PASS/FAIL；`-PverifyAutoClose=true` 检查后关闭，`-PverifyTimeout` 放宽等待）。
+- **验证状态（务必知悉）**：`verify-plugin.ps1` 与 `verifyOnIde` 任务已在 Windows + IDEA 2022.1 实跑通过（PASS，issues 0）；
+  `runPluginVerifier`（官方 Plugin Verifier 1.410）用 `-PverifierLocalIde=G:/GradleRepository/idea/ideaIC-2022.1`
+  实跑结果 **Compatible**（IC-221.5080.210，报告在 `build/reports/pluginVerifier/`）；
+  `verifyPlugin` / `verifyPluginConfiguration`（官方包结构与配置校验）均通过且**零告警**；
+  `verify-plugin.sh`（Unix 版）本机无 bash **尚未实跑**，首次在 Linux/macOS 使用前请先人工执行一次确认。
+- **PowerShell 调用 gradlew 的坑**：`-PideaVersion=2022.1` 这类含点号的参数必须加引号
+  （`"-PideaVersion=2022.1"`），否则会被 PowerShell 拆成 `-PideaVersion=2022` + `.1`，报 `Task '.1' not found`。

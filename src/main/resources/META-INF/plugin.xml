@@ -1,0 +1,98 @@
+<!--
+  SVN Enhance Merge —— 独立增强插件描述文件
+
+  关键设计：
+  1. <depends>Subversion</depends>：依赖 IDEA 内置 Subversion 插件，
+     构建期由 Gradle IntelliJ Plugin 将其捆绑类暴露到编译 classpath（见 build.gradle.kts 的
+     plugins.set(listOf("Subversion"))），运行期复用其公开 API。
+     没有这条 depends 时，插件会在 SVN 插件之前加载，运行期引用 svn4idea 类会 ClassNotFound。
+  2. <depends>com.intellij.modules.vcs</depends>：声明 VCS 能力依赖，
+     保证插件只在具备 VCS 框架的 IDE（IDEA 等）中加载，避免装进无 VCS 的轻量 IDE 后入口失效。
+  3. since-build="221" / until-build="252.*"：支持 IDEA 2022.1 – 2025.2。
+     until-build 是"已验证上限"而非"测试上限"：svn4idea 的 API 不在平台兼容承诺内，
+     更高版本（2026.x）须用 `gradlew verifyOnIde -PideaVersion=<版本>` 回归通过后再放开，
+     依据与回归方法见 README「兼容性说明」与 .codebuddy/rules 的 svn4idea API 兼容性基线。
+  4. <resource-bundle>：让 EP 的 key="..." 属性与 Configurable.getDisplayName() 共用同一套
+     本地化文案（未装语言包 = 英文基包，装了中文语言包 = _zh_CN）。
+-->
+<idea-plugin>
+    <!-- 插件唯一标识：插件市场 / 本地安装均以此区分 -->
+    <id>com.weixf.svn.mergeenhance</id>
+    <name>SVN Enhance Merge</name>
+    <!--
+      vendor 的 email / url 是 JetBrains Marketplace 的强制项：审核需要能联系到作者。
+      仓库主页：https://wxingfu.github.io/
+    -->
+    <vendor email="wxingfu@alu.uestc.edu.cn" url="https://wxingfu.github.io/">wxingfu</vendor>
+    <description><![CDATA[
+Selective revision merge for Subversion working copies, in the style of TortoiseSVN's
+"Show Log / merge revisions".
+
+<ul>
+  <li>Reuses the built-in Subversion plugin's branch picker and merge engine (no forked code).</li>
+  <li>Revision list with live filtering (message / path / author / revision / Bug-ID / date range),
+      speed search and inline diff.</li>
+  <li>Per-revision merge status (already merged / alien / calculating) plus "[Already merged]"
+      markers on the affected files.</li>
+  <li>Loads revisions page by page directly from the repository.</li>
+  <li>All pre-merge steps (local changes prompt, progress, conflict resolution, result tree)
+      behave exactly like the IDE's built-in "Merge From".</li>
+</ul>
+
+<p><b>Source code:</b> <a href="https://github.com/wxingfu/SvnMergeEnhance">github.com/wxingfu/SvnMergeEnhance</a>
+(MIT License). Homepage: <a href="https://wxingfu.github.io/">wxingfu.github.io</a>.</p>
+
+<p><b>Third-party:</b> bundles <a href="https://github.com/LGoodDatePicker/LGoodDatePicker">LGoodDatePicker</a>
+(MIT License) for the date pickers. The full license text ships in
+<code>THIRD-PARTY-LICENSES.txt</code> inside the plugin distribution.</p>
+    ]]></description>
+
+    <change-notes><![CDATA[
+<h4>1.0.0</h4>
+<ul>
+  <li>Initial release.</li>
+  <li>Entry point: a "Enhance Merge..." link injected into
+      <i>Version Controls | Subversion Working Copies Information</i>, right below "Merge From...".</li>
+  <li>Revision picking with TortoiseSVN-style filtering, paging (+100 / +500 / Show All),
+      speed search and per-revision merge status.</li>
+  <li>Settings page under <i>Settings | Version Control | SVN Enhance Merge</i>.</li>
+  <li>English and Simplified Chinese UI.</li>
+</ul>
+    ]]></change-notes>
+
+    <!-- VCS 平台能力 + 内置 Subversion 插件（二选一不可缺） -->
+    <depends>com.intellij.modules.vcs</depends>
+    <depends>Subversion</depends>
+
+    <!-- 本插件自绘界面的文案（英文 + 中文） -->
+    <resource-bundle>messages.EnhanceMergeBundle</resource-bundle>
+
+    <!-- 最低兼容 IDEA 2022.1（build 221） -->
+    <idea-version since-build="221"/>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!--
+          唯一入口：把「Enhance Merge…」链接注入内置 SVN 插件的
+          「Subversion Working Copies Information」标签页（紧跟「Merge From…」下方）。
+          运行时定位 WorkingCopyInfoPanel 并向其表格追加一行，不修改 svn4idea 源码。
+          按决策（2026-10-18）不再注册任何 <action>，故 Subversion 主菜单与右键菜单中无本插件入口。
+        -->
+        <postStartupActivity implementation="com.weixf.svn.mergeenhance.wcinfo.WcInfoLinkInjector"/>
+
+        <!--
+          设置页（T9 / Spec R11）：Settings → Version Control → SVN Enhance Merge。
+          应用级注册：与内置 Subversion 的 SvnConfigurable 同处 Version Control 分组，
+          且 projectConfigurable 的实例由平台无参构造、拿不到 Project 句柄（见 EnhanceMergeSettings 注释）。
+          标题本地化：用 `key` 引用插件 bundle（平台 ConfigurableEP.getDisplayName() 语义为
+          messageOrDefault(bundle, key, displayName)，即 key 优先、displayName 兜底），
+          与原版 svn4idea 的 `key="configurable.name.svn.general"` 做法一致。
+        -->
+        <applicationConfigurable
+            parentId="vcs"
+            id="com.weixf.svn.mergeenhance.settings"
+            key="settings.display.name"
+            displayName="SVN Enhance Merge"
+            instance="com.weixf.svn.mergeenhance.settings.EnhanceMergeConfigurable"/>
+        <applicationService serviceImplementation="com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings"/>
+    </extensions>
+</idea-plugin>

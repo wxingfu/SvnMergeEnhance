@@ -1,0 +1,18 @@
+<!--
+  插件图标（深色主题，40x40）。与 pluginIcon.svg 结构完全一致，
+  仅把描边/填充换成深色主题下对比度更高的浅蓝（#548AF7）。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40" fill="none">
+  <title>SVN Custom Merge</title>
+  <!-- 汇聚线：自两个源节点边缘汇入目标节点边缘 -->
+  <path d="M13.4 12.8 L24.3 18.7 M13.4 27.2 L24.3 21.3"
+        stroke="#548AF7" stroke-width="2.4" stroke-linecap="round"/>
+  <!-- 两个源节点 -->
+  <circle cx="10.5" cy="11" r="3.4" fill="#548AF7"/>
+  <circle cx="10.5" cy="29" r="3.4" fill="#548AF7"/>
+  <!-- 目标节点（合并结果） -->
+  <circle cx="28.5" cy="20" r="4.4" fill="#548AF7"/>
+  <!-- Enhance 徽标：右上角加号 -->
+  <path d="M30.5 5.5 V12.5 M27 9 H34"
+        stroke="#548AF7" stroke-width="2.2" stroke-linecap="round"/>
+</svg>

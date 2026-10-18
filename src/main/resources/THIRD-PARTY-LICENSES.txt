@@ -1,0 +1,48 @@
+Third-Party Licenses
+====================
+
+SVN Enhance Merge redistributes the third-party component listed below.
+Its license text is reproduced here in full, as required by that license
+(the upstream JAR itself ships no LICENSE file, so this file supplies it).
+
+
+--------------------------------------------------------------------------------
+LGoodDatePicker 11.2.1
+--------------------------------------------------------------------------------
+Used for  : the From / To date pickers in the revision filter bar
+            (com.github.lgooddatepicker.components.DatePicker).
+
+Upstream  : https://github.com/LGoodDatePicker/LGoodDatePicker
+Artifact  : com.github.lgooddatepicker:LGoodDatePicker:11.2.1
+License   : MIT
+
+Copyright (c) LGoodDatePicker contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+--------------------------------------------------------------------------------
+IntelliJ Platform SDK / bundled Subversion plugin
+--------------------------------------------------------------------------------
+Neither is redistributed by this plugin: both are used only through their public
+APIs and are provided by the IDE at runtime (JetBrains Terms of Service and
+Apache License 2.0 respectively).
+
+The Kotlin standard library is NOT redistributed either - it is supplied by the
+IntelliJ Platform itself (see gradle.properties: kotlin.stdlib.default.dependency=false).

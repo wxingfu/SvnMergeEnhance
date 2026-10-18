@@ -1,0 +1,105 @@
+package com.weixf.svn.mergeenhance.settings
+
+import com.intellij.openapi.options.Configurable
+import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBTextField
+import com.intellij.util.ui.FormBuilder
+import com.intellij.util.ui.JBUI
+import com.weixf.svn.mergeenhance.EnhanceMergeBundle
+import javax.swing.JComponent
+import javax.swing.JPanel
+import javax.swing.JSpinner
+import javax.swing.SpinnerNumberModel
+
+/**
+ * 设置页：`Settings/Preferences → Version Control → SVN Enhance Merge`（Spec R11）。
+ *
+ * 四个配置项：
+ * - 每页条数（10–500，默认 100 对齐 TortoiseSVN 的 `NumberOfLogs`）
+ * - 计算已合并状态（默认开启）
+ * - Bug-ID 正则
+ * - 默认日期范围（天，0 = 不限制）
+ */
+class EnhanceMergeConfigurable : Configurable {
+
+    private val settings = EnhanceMergeSettings.getInstance()
+
+    private var pageSizeSpinner: JSpinner? = null
+    private var mergeStatusCheckBox: JBCheckBox? = null
+    private var bugIdField: JBTextField? = null
+    private var dateRangeSpinner: JSpinner? = null
+
+    override fun getDisplayName(): String = EnhanceMergeBundle.message("settings.display.name")
+
+    override fun createComponent(): JComponent {
+        pageSizeSpinner = JSpinner(
+            SpinnerNumberModel(
+                settings.pageSize,
+                EnhanceMergeSettings.MIN_PAGE_SIZE,
+                EnhanceMergeSettings.MAX_PAGE_SIZE,
+                10,
+            )
+        )
+        mergeStatusCheckBox = JBCheckBox().apply { isSelected = settings.computeMergeStatus }
+        bugIdField = JBTextField(settings.bugIdPattern, 40)
+        dateRangeSpinner = JSpinner(SpinnerNumberModel(settings.defaultDateRangeDays, 0, 3650, 1))
+
+        return FormBuilder.createFormBuilder()
+            .addLabeledComponent(JBLabel(EnhanceMergeBundle.message("settings.page.size")), pageSizeSpinner!!)
+            .addTooltip(EnhanceMergeBundle.message("settings.page.size.hint"))
+            .addVerticalGap(12)
+            .addLabeledComponent(
+                JBLabel(EnhanceMergeBundle.message("settings.compute.merge.status")),
+                mergeStatusCheckBox!!,
+            )
+            .addTooltip(EnhanceMergeBundle.message("settings.compute.merge.status.hint"))
+            .addVerticalGap(12)
+            .addLabeledComponent(JBLabel(EnhanceMergeBundle.message("settings.bug.id.pattern")), bugIdField!!)
+            .addTooltip(EnhanceMergeBundle.message("settings.bug.id.pattern.hint"))
+            .addVerticalGap(12)
+            .addLabeledComponent(
+                JBLabel(EnhanceMergeBundle.message("settings.default.date.range")),
+                dateRangeSpinner!!,
+            )
+            .addTooltip(EnhanceMergeBundle.message("settings.default.date.range.hint"))
+            .addComponentFillVertically(JPanel(), 0)
+            .panel
+    }
+
+    override fun isModified(): Boolean {
+        val spinner = pageSizeSpinner ?: return false
+        val merge = mergeStatusCheckBox ?: return false
+        val bugId = bugIdField ?: return false
+        val dateRange = dateRangeSpinner ?: return false
+        return spinner.value != settings.pageSize ||
+            merge.isSelected != settings.computeMergeStatus ||
+            bugId.text != settings.bugIdPattern ||
+            dateRange.value != settings.defaultDateRangeDays
+    }
+
+    override fun apply() {
+        (pageSizeSpinner?.value as? Int)?.let { settings.pageSize = it }
+        mergeStatusCheckBox?.isSelected?.let { settings.computeMergeStatus = it }
+        // 正则允许为空串（等价于「不提取 Bug-ID」）；空白串回退默认值
+        val pattern = bugIdField?.text?.trim().orEmpty()
+        settings.bugIdPattern = pattern.ifEmpty { EnhanceMergeSettings.DEFAULT_BUG_ID_PATTERN }
+        (dateRangeSpinner?.value as? Int)?.let { settings.defaultDateRangeDays = it }
+    }
+
+    override fun reset() {
+        pageSizeSpinner?.value = settings.pageSize
+        mergeStatusCheckBox?.isSelected = settings.computeMergeStatus
+        bugIdField?.text = settings.bugIdPattern
+        dateRangeSpinner?.value = settings.defaultDateRangeDays
+    }
+
+    override fun disposeUIResources() {
+        pageSizeSpinner = null
+        mergeStatusCheckBox = null
+        bugIdField = null
+        dateRangeSpinner = null
+    }
+
+    override fun getHelpTopic(): String? = null
+}

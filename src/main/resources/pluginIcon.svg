@@ -1,0 +1,21 @@
+<!--
+  插件图标（浅色主题，40x40）。
+
+  设计语义：左侧两个节点 = 两个来源分支/修订，汇聚到右侧一个节点 = 合并结果；
+  右上角"+" = Enhance（增强）。刻意不画底色方块，避免与工具窗口图标混淆；
+  线条用 JetBrains 标准蓝，两种主题各一份（pluginIcon_dark.svg）。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40" fill="none">
+  <title>SVN Custom Merge</title>
+  <!-- 汇聚线：自两个源节点边缘汇入目标节点边缘 -->
+  <path d="M13.4 12.8 L24.3 18.7 M13.4 27.2 L24.3 21.3"
+        stroke="#3574F0" stroke-width="2.4" stroke-linecap="round"/>
+  <!-- 两个源节点 -->
+  <circle cx="10.5" cy="11" r="3.4" fill="#3574F0"/>
+  <circle cx="10.5" cy="29" r="3.4" fill="#3574F0"/>
+  <!-- 目标节点（合并结果） -->
+  <circle cx="28.5" cy="20" r="4.4" fill="#3574F0"/>
+  <!-- Enhance 徽标：右上角加号 -->
+  <path d="M30.5 5.5 V12.5 M27 9 H34"
+        stroke="#3574F0" stroke-width="2.2" stroke-linecap="round"/>
+</svg>

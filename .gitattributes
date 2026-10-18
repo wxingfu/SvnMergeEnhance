@@ -1,0 +1,22 @@
+# 统一行尾规范化：仓库内一律以 LF 存储，检出时按类型转换
+* text=auto eol=lf
+
+# Windows 批处理 / PowerShell 用 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# POSIX 脚本必须 LF（gradlew、verify-plugin.sh 在 Linux/macOS 上执行）
+gradlew text eol=lf
+*.sh text eol=lf
+
+# 二进制文件不做行尾转换
+*.jar binary
+*.zip binary
+*.png binary
+*.ico binary
+*.jks binary
+
+# 属性文件与描述文件保持 UTF-8（IDEA 插件运行时按 UTF-8 读取）
+*.properties text eol=lf working-tree-encoding=UTF-8
+*.xml text eol=lf working-tree-encoding=UTF-8
