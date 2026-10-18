@@ -21,7 +21,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
 
       - name: Compile, unit tests, official package verification
-        run: ./gradlew build test verifyPlugin --stacktrace
+        # chmod 是兜底：Windows 上提交的 gradlew 容易丢可执行位（git 记 100644），
+        # 在 Linux runner 上直接 ./gradlew 会以 exit 126 "Permission denied" 失败。
+        run: chmod +x gradlew && ./gradlew build test verifyPlugin --stacktrace
 
       - name: Upload plugin distribution
         uses: actions/upload-artifact@v4
@@ -31,7 +33,7 @@ jobs:
           if-no-files-found: error
 
   plugin-verifier:
-    name: Plugin Verifier (IDEA 2022.1)
+    name: Plugin Verifier (2022.1 / 2026.2.3)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -45,7 +47,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
 
       - name: Run IntelliJ Plugin Verifier
-        run: ./gradlew runPluginVerifier --stacktrace
+        # 同样兜底 chmod；两端 IDE 由 build.gradle.kts 的 ideVersions 指定，会自动下载
+        run: chmod +x gradlew && ./gradlew runPluginVerifier --stacktrace
 
       - name: Upload verifier report
         uses: actions/upload-artifact@v4
