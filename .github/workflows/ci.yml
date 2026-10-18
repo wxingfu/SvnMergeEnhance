@@ -47,7 +47,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
 
       - name: Run IntelliJ Plugin Verifier
-        # 同样兜底 chmod；两端 IDE 由 build.gradle.kts 的 ideVersions 指定，会自动下载
+        # 同样兜底 chmod；两端 IDE 由 build.gradle.kts 的 ideVersions 指定并自动下载
+        #（上限用 IU-2026.2.3：2026 起 Community/Ultimate 合并，code=IC 已无条目）
         run: chmod +x gradlew && ./gradlew runPluginVerifier --stacktrace
 
       - name: Upload verifier report

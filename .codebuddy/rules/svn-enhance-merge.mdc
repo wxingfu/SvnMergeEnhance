@@ -282,6 +282,10 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - **验证状态（务必知悉）**：`verify-plugin.ps1` 与 `verifyOnIde` 任务已在 Windows + IDEA 2022.1 实跑通过（PASS，issues 0）；
   `runPluginVerifier`（官方 Plugin Verifier **1.410**，已在 build.gradle.kts 里 pin 住，不再用会联网解析 latest 的 `VERSION_LATEST`）
   用 `-PverifierLocalIde="G:/GradleRepository/idea/ideaIC-2022.1,G:/GradleRepository/idea/ideaIC-2026.2.3"`
+  （**本机路径**：指向 Maven 仓库解压的 ideaIC 目录，2026.2.3 也能取到）
+  **CI 路径**（无 localIde，走 JetBrains Data Services 下载）：上限必须写 `IU-2026.2.3` —— 2026 起 Community/Ultimate 合并为统一发行版，
+  接口已无独立的 ideaIC-2026.x 条目（实测 `code=IC&version=2026.2.3` → HTTP 404，`code=IU/IIU` → 302 指向
+  `idea-2026.2.3.tar.gz`），写 IC 会报 `IDE 'IC-2026.2.3' cannot be downloaded`。
   （逗号分隔多目录）实跑：**IC-221.5080.210 与 IC-262.10968.63 两端均 Compatible**，2026.2.3 侧 0 兼容性问题
   （仅 2 处 deprecated：`ActionToolbar.updateActionsImmediately`、`TableViewSpeedSearch` 单参构造，都仍可用不阻断），报告在 `build/reports/pluginVerifier/`；
   `verifyPlugin` / `verifyPluginConfiguration`（官方包结构与配置校验）均通过且**零告警**；

@@ -142,8 +142,16 @@ tasks.named<RunPluginVerifierTask>("runPluginVerifier") {
         // 逗号分隔 → 多个本地 IDE 目录（如 ideaIC-2022.1,ideaIC-2026.2.3 一键回归支持范围两端）
         localPaths.set(localIde.split(',').map { file(it.trim()) }.filter { it.isDirectory })
     } else {
-        // 只取支持范围的两端：最低（221）与最高（262.*），中间版本 API 连续，抽查两端即可
-        ideVersions.set(listOf("IC-2022.1", "IC-2026.2.3"))
+        // 只取支持范围的两端：最低（221）与最高（262.*），中间版本 API 连续，抽查两端即可。
+        //
+        // ⚠️ 2026.x 必须写 **IU** 而不是 IC：IDEA 2026 起 JetBrains 把 Community 与 Ultimate
+        // 合并为统一发行版，Data Services 下载接口里已无独立的 ideaIC-2026.x 条目
+        // （实测 code=IC&version=2026.2.3 → HTTP 404，而 code=IU / IIU → 302 指向
+        // download.jetbrains.com/idea/idea-2026.2.3.tar.gz），IPGP 由此报
+        // "IDE 'IC-2026.2.3' cannot be downloaded"。
+        // 注意这只影响本任务的 IDE **下载**通道（Maven 仓库里的 ideaIC:2026.2.3 仍在，
+        // 故本机用 -PverifierLocalIde 指向已解压目录的回归不受影响）。
+        ideVersions.set(listOf("IC-2022.1", "IU-2026.2.3"))
     }
     // 只对「兼容性硬问题」失败（缺类、签名不符）。deprecated / 内部 API 等软问题只报告不阻断，
     // 否则 bundled 插件 API 的 deprecation 会把构建卡死（svn4idea 本身就在演进）。

@@ -35,6 +35,9 @@
   `verifyPluginConfiguration` 零告警。
 
 ### 修复
+- **CI：Plugin Verifier 下载上限 IDE 失败**：IDEA 2026 起 Community 与 Ultimate 合并为统一发行版，
+  JetBrains 下载接口已无独立的 `ideaIC-2026.x` 条目（`code=IC` 返回 404），
+  verifier 的 `ideVersions` 上限改用 `IU-2026.2.3`（`IU`/`IIU` 均指向统一发行版）。
 - **IDEA 2026.x 启动即崩**：`DynamicBundle.findLanguageBundle()` 在 2026.x 被移除
   （搬到 `com.intellij.l10n.LocalizationUtil`），旧调用会抛 `NoSuchMethodError`；
   改为「新平台优先」的反射桥接，两个版本都能正确判断是否装了语言包（新增 3 个单测钉住回退路径）。
