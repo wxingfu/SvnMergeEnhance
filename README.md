@@ -72,8 +72,8 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 | 项 | 要求 |
 |---|---|
-| IDE | IntelliJ IDEA **2022.1 – 2025.2**（插件 `since-build=221` / `until-build=252.*`；2026.x 待回归验证后放开） |
-| VCS 插件 | IDEA 内置 **Subversion** 插件（默认随 IDE 提供） |
+| IDE | IntelliJ IDEA **2022.1 – 2026.2.3**（插件 `since-build=221` / `until-build=262.*`；2026.2.3 已回归验证，更高版本待验证后放开） |
+| VCS 插件 | **Subversion** 插件。⚠️ **IDEA 2026.x 起 JetBrains 已把 SVN 从发行版 unbundle**：2022.1–2025.x 自带；2026.x 需先从 Marketplace 安装 JetBrains 官方 **Subversion** 插件，否则本插件因 `<depends>Subversion</depends>` 无法加载 |
 | 构建 JDK | **JDK 11**（与 IDEA 2022.1 运行时 JBR 11 对齐；JDK 8 不可用） |
 | 构建工具 | Gradle 8.x（推荐使用仓库自带 wrapper） |
 
@@ -349,7 +349,7 @@ deprecation 会把构建卡死）。
 | 项 | 值 | 说明 |
 |---|---|---|
 | `since-build` | `221` | IDEA 2022.1 |
-| `until-build` | `252.*` | IDEA 2025.2；2026.x 未实测，故未声明 |
+| `until-build` | `262.*` | IDEA 2026.2.3；已通过 Plugin Verifier 对 IC-2022.1 / IC-2026.2.3 两端的二进制 API 校验（Compatible），2026.3+ 待验证后放开 |
 
 ### 兼容性依据（已逐项核对）
 
@@ -366,6 +366,13 @@ deprecation 会把构建卡死）。
 3. **Kotlin 标准库**：按官方要求不随插件分发（`kotlin.stdlib.default.dependency=false`），
    运行时由 IDEA 核心 `lib/3rd-party-rt.jar` 提供。已实测 2022.1 沙箱加载正常
    （`gradlew verifyOnIde -PideaVersion=2022.1` → PASS）。
+4. **2026.x 的两处平台变化（已适配）**：
+   - `DynamicBundle.findLanguageBundle()` 被移除（搬到 `com.intellij.l10n.LocalizationUtil`）。
+     未适配前 Plugin Verifier 报 `NoSuchMethodError`，现改为「新平台优先」的反射桥接，
+     两个版本都能正确判断是否装了语言包（`EnhanceMergeBundle`）。
+   - **SVN 插件不再内置**：Plugin Verifier 实测 2026.2.3 对应的是 Marketplace 上的
+     `Subversion 262.10968.211`。入口链接所反射的 `org.jetbrains.idea.svn.dialogs.WorkingCopyInfoPanel.getInfo()`
+     在 2022.1 与 2026.2.3 的 svn4idea 中**签名完全一致**，注入机制无需改动。
 
 ### 已知风险与回归方法
 
@@ -374,20 +381,40 @@ deprecation 会把构建卡死）。
 - **运行时行为差异**：2022.1 之后 IDEA 的 SVN 后端由 SVNKit 切换为命令行 `svn`。
   本插件只走公共 API（不直接引用 SVNKit），但认证、错误信息等行为可能有差异，需实测。
 - **Java 目标版本**：当前按 JVM 11 编译；JetBrains 未来版本可能提高最低要求（如 17），升级基线时需同步。
+- **⚠️ 无法对 2026.x 做「重新编译 + 沙箱」回归（工具链限制，非插件缺陷）**：
+  - IDEA 2026.x 的平台 jar 是 **Kotlin 2.4 元数据**，而本项目按设计锁定 Kotlin 1.7.22 编译器
+    （对齐 IDEA 2022.1 内置 Kotlin），对着 2026 SDK 编译会报 `Incompatible classes were found in dependencies`；
+  - IPGP 1.x 无法启动 2026.x 沙箱：新版布局把 vmoptions 挪到 `bin/win/idea64.exe.vmoptions`，
+    其中存在不含 `=` 的条目（`-Xmx2048m`、`-ea` 等），触发 IPGP `resolveIdeHomeVariable`
+    的 `split("=")[1]` 越界（`IndexOutOfBoundsException: Index: 1, Size: 1`）。
+
+  因此 2026.x 的兼容性依据是 **Plugin Verifier**（它会自动按 IDE 版本解析并下载对应的
+  Marketplace 版 SVN 插件做二进制比对，结果 Compatible），而**入口链接注入与合并主流程
+  需要在真实 2026.2.3 里人工过一遍**。若要恢复 2026.x 的编译期回归能力，需迁移到
+  IPGP 2.x + Kotlin 2.x（构建脚本大改，`intellij { }` / `runPluginVerifier` 配置均需重写）。
 - 一键回归验证（自动切 SDK 启动沙箱、轮询插件就绪、扫描插件异常日志并给出 PASS/FAIL）：
 
   ```bash
   # Gradle 任务（跨平台，推荐）
-  ./gradlew verifyOnIde -PideaVersion=2025.2
+  ./gradlew verifyOnIde -PideaVersion=2026.2.3
 
   # 或直接调脚本
-  powershell -File scripts\verify-plugin.ps1 -Version 2025.2   # Windows
-  scripts/verify-plugin.sh --version 2025.2                    # Linux / macOS
+  powershell -File scripts\verify-plugin.ps1 -Version 2026.2.3   # Windows
+  scripts/verify-plugin.sh --version 2026.2.3                    # Linux / macOS
   ```
 
   默认保持 IDE 运行以便人工走主流程；`-PverifyAutoClose=true` / `--close-when-done` 则在检查结束后关闭。
   首次验证某个版本会先下载该版本 IDE，耐心等待（可用 `-PverifyTimeout=900` 放宽）。
   实测通过后再提高 `until-build`。
+- 二进制 API 校验（官方 Plugin Verifier，比对插件与目标 IDE 的类/方法签名）：
+
+  ```bash
+  # 自动下载支持范围两端（IC-2022.1 / IC-2026.2.3）
+  ./gradlew runPluginVerifier
+
+  # 复用本机已解压的 SDK，不重复下载（逗号分隔多个目录）
+  ./gradlew runPluginVerifier "-PverifierLocalIde=G:/GradleRepository/idea/ideaIC-2022.1,G:/GradleRepository/idea/ideaIC-2026.2.3"
+  ```
 
 ---
 

@@ -6,6 +6,7 @@ import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 import java.text.MessageFormat
 import java.util.Locale
+import java.util.MissingResourceException
 import java.util.PropertyResourceBundle
 import java.util.ResourceBundle
 
@@ -25,27 +26,75 @@ import java.util.ResourceBundle
  * ## 适配策略（支持后续安装中文/其它语言插件）
  *
  * 用平台扩展点判断"是否真的装了语言包"：
- * - `DynamicBundle.findLanguageBundle()` 非 null ⇒ 已装语言包，使用 `DynamicBundle.getLocale()`
+ * - `findLanguageBundle()` 非 null ⇒ 已装语言包，使用 `DynamicBundle.getLocale()`
  *   选具体语言（装了中文包 → `_zh_CN`，装了日文包 → `_ja`，没有对应文件则自动回退英文基包）；
  * - 为 null ⇒ **强制英文**，与英文 IDE 界面保持一致。
  *
  * 这样：没装语言包时永远不会"冒中文"；装了语言包后自动跟随，无需改代码。
  * 自带 UTF-8 解码（IntelliJ 的 properties 是 UTF-8，`ResourceBundle` 默认按 ISO-8859-1 读）。
+ *
+ * ## `findLanguageBundle()` 的跨版本桥接（2026.x 搬迁）
+ *
+ * 该方法在 2026.x 从 `DynamicBundle`（静态）搬到了 `com.intellij.l10n.LocalizationUtil`（实例），
+ * 且**旧入口被直接移除**（官方 Plugin Verifier 对 IC-2026.2.3 报 `NoSuchMethodError`）。
+ * 直接用旧入口编译出的字节码在 2026.2.3 上一调就崩，故按"新平台优先"反射两条路径；
+ * 两条都不可用、或确实没有语言包时返回 null。返回值只用于 `!= null` 判定，不接触其类型。
  */
 object EnhanceMergeBundle {
 
     private const val BASE_NAME = "messages.EnhanceMergeBundle"
+
+    /** 2026.x 起承载 `findLanguageBundle()` 的 Kotlin object 类名。 */
+    private const val LOCALIZATION_UTIL_CLASS = "com.intellij.l10n.LocalizationUtil"
+
+    /** Kotlin object 的单例字段名。 */
+    private const val INSTANCE_FIELD = "INSTANCE"
+
+    /** 两个平台版本上同名的探测方法名。 */
+    private const val FIND_LANGUAGE_BUNDLE_METHOD = "findLanguageBundle"
+
     private val LOG = Logger.getInstance(EnhanceMergeBundle::class.java)
 
     /** 平台是否装载了语言包；为 false 时强制英文，避免与英文 IDE 界面不一致。 */
     private val languagePackInstalled: Boolean by lazy {
-        val active = DynamicBundle.findLanguageBundle() != null
+        val active = findLanguageBundle() != null
         val platformLocale = runCatching { DynamicBundle.getLocale() }.getOrNull()
         LOG.info(
             "EnhanceMerge i18n: languagePack=$active, platformLocale=$platformLocale, " +
                 "defaultLocale=${Locale.getDefault()}, selected=${if (active) platformLocale else Locale.ROOT}"
         )
         active
+    }
+
+    /**
+     * 探测平台语言包（详见类文档「跨版本桥接」）：
+     * - 2026.x：`com.intellij.l10n.LocalizationUtil.INSTANCE.findLanguageBundle()`；
+     * - 2022.1 ~ 2025.x：`DynamicBundle.findLanguageBundle()`（静态）。
+     *
+     * 返回 null = 两条路都不可用，或确实没有安装语言包（两种情形对本类的含义相同：强制英文）。
+     */
+    private fun findLanguageBundle(): Any? {
+        val fromNewApi = try {
+            val utilClass = Class.forName(LOCALIZATION_UTIL_CLASS)
+            val util = utilClass.getDeclaredField(INSTANCE_FIELD).apply { isAccessible = true }.get(null)
+            utilClass.getMethod(FIND_LANGUAGE_BUNDLE_METHOD).invoke(util)
+        } catch (e: ReflectiveOperationException) {
+            null
+        } catch (e: LinkageError) {
+            // 类在但二进制不兼容（如平台重构了字段/方法签名）
+            LOG.warn("LocalizationUtil is present but not usable on this IDE build", e)
+            null
+        }
+        if (fromNewApi != null) return fromNewApi
+
+        return try {
+            DynamicBundle::class.java.getMethod(FIND_LANGUAGE_BUNDLE_METHOD).invoke(null)
+        } catch (e: ReflectiveOperationException) {
+            null
+        } catch (e: LinkageError) {
+            LOG.warn("DynamicBundle.findLanguageBundle is not usable on this IDE build", e)
+            null
+        }
     }
 
     private val bundle: ResourceBundle by lazy { loadBundle() }
@@ -78,13 +127,10 @@ object EnhanceMergeBundle {
         return try {
             val found = ResourceBundle.getBundle(BASE_NAME, desired, loader, Utf8Control)
             if (desired == Locale.ROOT || found.locale.language == desired.language) found else base()
-        } catch (t: Throwable) {
+        } catch (t: MissingResourceException) {
+            // 指定语言的资源不存在（装了语言包但本插件没有对应翻译）→ 退回英文基包
             LOG.warn("Failed to load EnhanceMerge bundle for $desired, falling back to base bundle", t)
-            try {
-                base()
-            } catch (t2: Throwable) {
-                throw IllegalStateException("EnhanceMerge bundle is missing: $BASE_NAME", t2)
-            }
+            base()
         }
     }
 

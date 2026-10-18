@@ -5,6 +5,12 @@
 //
 // 每个配置项的"为什么"见下方行内注释；构建/验证命令见 README「开发与构建」。
 
+import javax.inject.Inject
+import org.gradle.api.DefaultTask
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.TaskAction
+import org.gradle.process.ExecOperations
 import org.jetbrains.intellij.tasks.BuildPluginTask
 import org.jetbrains.intellij.tasks.PatchPluginXmlTask
 import org.jetbrains.intellij.tasks.RunPluginVerifierTask
@@ -54,7 +60,20 @@ intellij {
     // 关键：显式把捆绑的 Subversion 插件类暴露到编译 classpath，
     // 否则 import org.jetbrains.idea.svn.* 会编译失败。
     // 不写 plugins.set 时 IPGP 只把 IDE 核心类放上 classpath，bundled plugin 的类不可见。
-    plugins.set(listOf("Subversion"))
+    //
+    // 引用形式随 IDE 版本而变：**JetBrains 从 2026.x 起把 SVN 从发行版 unbundle**，
+    //   - 2022.1 ~ 2025.x：IDEA 内置 svn4idea，按插件名/ID 引用即可；
+    //   - 2026.x：需按 `id:version` 从 JetBrains Marketplace 取与该 IDE 同 build 的那一版
+    //     （IC-262.10968.63 → Subversion 262.10968.211，可在 runPluginVerifier 报告的
+    //      dependencies.txt 里查到实际解析到的版本）。
+    // 用 -PsvnMarketplaceVersion=<版本> 覆盖；注意不要让默认（2022.1）构建走 Marketplace 版本，
+    // 否则会用 2026 版 svn4idea 编译，却对外声明支持 2022.1。
+    val svnPluginRef = if (version.get().startsWith("2026")) {
+        "Subversion:${providers.gradleProperty("svnMarketplaceVersion").getOrElse("262.10968.211")}"
+    } else {
+        "Subversion"
+    }
+    plugins.set(listOf(svnPluginRef))
     // since/until 由下方 PatchPluginXmlTask 手动控制（不跟随 SDK 默认值）。
     // 若不置 false，IPGP 会用 SDK 版本覆盖 plugin.xml 的 idea-version，
     // 导致"用 2025.2 编译就声明支持 2025.2"——而我们只在 2022.1 实测过。
@@ -90,10 +109,10 @@ tasks.test {
 tasks.withType<PatchPluginXmlTask> {
     // 最低支持 IDEA 2022.1（build 221）
     sinceBuild.set("221")
-    // 已验证上限：2025.2（build 252）。
-    // svn4idea 侧 14 个关键 API 已与最新源码逐一比对签名一致（见 .codebuddy/rules 的兼容性基线），
-    // 但 2026.x 未实测；升级前请用 `gradlew verifyOnIde -PideaVersion=<目标版本>` 回归后再提高此值。
-    untilBuild.set("252.*")
+    // 已验证上限：2026.2.3（build 262.*）—— 已用 `verifyOnIde -PideaVersion=2026.2.3` 沙箱回归 +
+    // `runPluginVerifier` 比对 IC-2022.1 / IC-2026.2.3 两端二进制 API（svn4idea 14 个关键 API 无断裂）。
+    // 更高版本（2026.3+）仍须先回归再提高此值。
+    untilBuild.set("262.*")
 }
 
 // ------------------------------------------------------------ 插件包根目录文件
@@ -114,19 +133,25 @@ tasks.named<BuildPluginTask>("buildPlugin") {
 //
 // 用法：
 //   gradlew runPluginVerifier                     # 校验最低与最高支持版本（会下载对应 IDE）
-//   gradlew runPluginVerifier -PverifierLocalIde=<已解压的 ideaIC 目录>
+//   gradlew runPluginVerifier -PverifierLocalIde=<已解压的 ideaIC 目录>[,<第二个目录>]
 //                                                  # 走 localPaths，复用本机已解压的 SDK，不下载 IDE
+//                                                  # （逗号分隔可同时校验多个本地 IDE，如下面的两端回归）
 tasks.named<RunPluginVerifierTask>("runPluginVerifier") {
     val localIde = providers.gradleProperty("verifierLocalIde").orNull
     if (!localIde.isNullOrBlank()) {
-        localPaths.set(listOf(file(localIde)))
+        // 逗号分隔 → 多个本地 IDE 目录（如 ideaIC-2022.1,ideaIC-2026.2.3 一键回归支持范围两端）
+        localPaths.set(localIde.split(',').map { file(it.trim()) }.filter { it.isDirectory })
     } else {
-        // 只取支持范围的两端：最低（221）与最高（252.*），中间版本 API 连续，抽查两端即可
-        ideVersions.set(listOf("IC-2022.1", "IC-2025.2"))
+        // 只取支持范围的两端：最低（221）与最高（262.*），中间版本 API 连续，抽查两端即可
+        ideVersions.set(listOf("IC-2022.1", "IC-2026.2.3"))
     }
     // 只对「兼容性硬问题」失败（缺类、签名不符）。deprecated / 内部 API 等软问题只报告不阻断，
     // 否则 bundled 插件 API 的 deprecation 会把构建卡死（svn4idea 本身就在演进）。
     failureLevel.set(listOf(RunPluginVerifierTask.FailureLevel.COMPATIBILITY_PROBLEMS))
+    // 固定版本而不用默认的 VERSION_LATEST：后者每次执行都要联网向 JetBrains API 解析"最新版"，
+    // 偶发 connection reset 会让任务以"Failed to calculate verifierPath"莫名失败（2026-10-18 实测踩到）。
+    // 1.410 已实测能校验 IC-2022.1 与 IC-2026.2.3；需要升级时用 `-PverifierVersion=<新版>` 覆盖。
+    verifierVersion.set(providers.gradleProperty("verifierVersion").getOrElse("1.410"))
 }
 
 // ------------------------------------------------------------ 跨平台回归验证
@@ -138,15 +163,34 @@ tasks.named<RunPluginVerifierTask>("runPluginVerifier") {
 //   gradlew verifyOnIde -PideaVersion=2025.2     # 验证指定版本（首次会下载该 IDE）
 //   gradlew verifyOnIde -PideaVersion=2026.2.3 -PverifyTimeout=900
 //   gradlew verifyOnIde -PideaVersion=2025.2 -PverifyAutoClose=true   # 检查后关闭沙箱
-val verifyOnIde by tasks.registering {
-    group = "verification"
-    description = "Boot the sandbox on a specific IDE version, wait for the plugin to load, then scan the log for plugin errors."
+//
+// 为什么抽成任务类而非 registering { doLast { } }：Gradle 8.11 起 Project.exec 已弃用
+// （编译期 w: 告警，9.0 直接移除），官方替代 ExecOperations 只能经服务注入（@get:Inject）
+// 获得，匿名任务的 doLast 里拿不到。providers.exec 虽是一行替代，但它**捕获**而非透传
+// 子进程输出，验证脚本数分钟的实时进度会全程不可见，故不采用。
+abstract class VerifyOnIdeTask : DefaultTask() {
 
-    doLast {
-        val version = (project.findProperty("ideaVersion") as String?) ?: "2022.1"
-        val autoClose = (project.findProperty("verifyAutoClose") as String?).toBoolean()
-        val timeout = (project.findProperty("verifyTimeout") as String?) ?: "420"
-        val projectPath = (project.findProperty("verifyProject") as String?) ?: ""
+    @get:Inject
+    abstract val execOperations: ExecOperations
+
+    @get:Input
+    abstract val ideaVersion: Property<String>
+
+    @get:Input
+    abstract val autoClose: Property<Boolean>
+
+    @get:Input
+    abstract val verifyTimeout: Property<String>
+
+    @get:Input
+    abstract val verifyProject: Property<String>
+
+    @TaskAction
+    fun verify() {
+        val version = ideaVersion.get()
+        val autoCloseValue = autoClose.get()
+        val timeout = verifyTimeout.get()
+        val projectPath = verifyProject.get()
         val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
 
         val command = if (isWindows) {
@@ -161,7 +205,7 @@ val verifyOnIde by tasks.registering {
                 add(version)
                 add("-TimeoutSec")
                 add(timeout)
-                if (autoClose) add("-CloseWhenDone")
+                if (autoCloseValue) add("-CloseWhenDone")
             }
         } else {
             buildList {
@@ -175,12 +219,12 @@ val verifyOnIde by tasks.registering {
                     add("--project")
                     add(projectPath)
                 }
-                if (autoClose) add("--close-when-done")
+                if (autoCloseValue) add("--close-when-done")
             }
         }
 
-        logger.lifecycle("[verifyOnIde] target IDE: $version (timeout=${timeout}s, autoClose=$autoClose)")
-        val result = project.exec {
+        logger.lifecycle("[verifyOnIde] target IDE: $version (timeout=${timeout}s, autoClose=$autoCloseValue)")
+        val result = execOperations.exec {
             commandLine(command)
             isIgnoreExitValue = true
         }
@@ -188,4 +232,14 @@ val verifyOnIde by tasks.registering {
             throw GradleException("verifyOnIde failed with exit code ${result.exitValue}; see the output above.")
         }
     }
+}
+
+val verifyOnIde by tasks.registering(VerifyOnIdeTask::class) {
+    group = "verification"
+    description = "Boot the sandbox on a specific IDE version, wait for the plugin to load, then scan the log for plugin errors."
+
+    ideaVersion.convention(project.findProperty("ideaVersion") as String? ?: "2022.1")
+    autoClose.convention((project.findProperty("verifyAutoClose") as String?).toBoolean())
+    verifyTimeout.convention(project.findProperty("verifyTimeout") as String? ?: "420")
+    verifyProject.convention(project.findProperty("verifyProject") as String? ?: "")
 }

@@ -30,7 +30,7 @@ alwaysApply: false
 - Gradle 运行 JDK：`org.gradle.java.home=D:/softwares/Java/jdk-11.0.32.1`（JDK 8 无法构建 since-2022 插件）。
 - Kotlin/Java 目标字节码 **11**（同时覆盖 2022.1/2.2 的 JBR11 与 2022.3+ 的 JBR17）。
 - `GRADLE_USER_HOME=G:\GradleRepository`；ideaIC 解压目录固定 `intellij.ideaDependencyCachePath=G:/GradleRepository/idea`。
-- 构建/验证命令：`gradlew buildPlugin`（产出 `build/distributions/*.zip`）、`gradlew test`（46 个纯逻辑用例）、
+- 构建/验证命令：`gradlew buildPlugin`（产出 `build/distributions/*.zip`）、`gradlew test`（49 个用例）、
   `gradlew verifyOnIde -PideaVersion=<版本>`（切版本启沙箱 + 扫插件异常日志，报 PASS/FAIL）、
   `gradlew runPluginVerifier`（官方 Plugin Verifier，比对二进制 API；`-PverifierLocalIde=<已解压 ideaIC 目录>` 可复用本地 SDK 不下载 IDE）、
   `gradlew runIde`（沙箱人工实测）。
@@ -40,12 +40,50 @@ alwaysApply: false
 - 离线参考源码：`G:\gitDownload\svn4idea`（svn4idea 最新版，**不在本仓库内、不参与构建**，仅用于核对公开 API 与兼容性基线）。
 - 构建/同步过程中**不要中断**：ideaIC 解压一旦被打断会产生残缺 jar，导致沙箱 IDE 报 `Unknown element: postStartupActivity` 与一串 `requires plugin 'com.intellij.modules.java'`。出现该问题时删除 `G:\GradleRepository\idea\ideaIC-2022.1` 后重跑 `gradlew cleanIdea setupDependencies` 完整解压。
 
+### 构建告警清单（2026-10-18 逐一定源，勿重复排查）
+
+`gradlew buildPlugin` 输出里的告警分四类，只有第 1 类与本项目相关：
+
+1. **`w: build.gradle.kts: 'exec(Action<in ExecSpec>)' is deprecated`（已修）**：Gradle 8.11 起 `Project.exec`
+   四个重载全部标 `@Deprecated`（9.0 移除）。官方替代是 `ExecOperations`（服务注入，输出实时透传）或
+   `providers.exec`（**捕获**输出，长时验证脚本不可见，勿用）。已把 `verifyOnIde` 改为
+   `abstract class VerifyOnIdeTask : DefaultTask()` + `@get:Inject ExecOperations` 的任务类
+   （匿名任务 `doLast` 里拿不到服务注入）。改后 `verifyOnIde` 实跑 PASS。
+2. **`The org.gradle.api.plugins.Convention type has been deprecated`（KGP 内部，未修）**：
+   根因是 **Kotlin Gradle Plugin 1.7.22 自身**（1.8.22 仍有、**1.9.25 已修**），与 IPGP 版本无关
+   （1.16.1~1.17.3 均如此，已逐一实测）。因 Kotlin 1.7.22 是与 IDEA 2022.1 内置 Kotlin 对齐的**有意选择**，
+   不升级；仅 Gradle 9.0 才会失败，而 wrapper 锁死 8.13。将来迁移 Gradle 9 时必须连带升 Kotlin（+IPGP 2.x）。
+3. **`Executing Gradle on JVM versions 16 and lower has been deprecated`（用户级配置，未改）**：
+   daemon 跑在 JDK 11（用户级 `org.gradle.java.home`）。实测 `-Dorg.gradle.java.home=D:/softwares/Java/jdk-17.0.2`
+   可消除且 `jvmToolchain(11)` 照常解析、构建通过；但规则既定 daemon JDK 为 11，**改动需用户决策**。
+4. **`CodeWithMe is already registered` / `Jetbrains UI DSL: Unsupported labeled component` / `JCEF is manually disabled`**：
+   `buildSearchableOptions` 任务启动的**无头沙箱 IDE** 里其他捆绑插件的日志，与本插件无关，无法消除。
+5. **`patchPluginXml: attribute 'since-build=[221]' ... will be set to '221'`**：IPGP 的**无条件提示**
+   （属性已存在就打 warn，与值是否变化无关，见 `PatchPluginXmlTask.patchAttribute`）。plugin.xml 的
+   `<idea-version since-build="221"/>` 按规则保留，故此消息会一直在，属信息性噪音。
+
+### verifyOnIde 超时陷阱（2026-10-18 实测）
+
+沙箱 IDE（`-Xmx750m`）就绪耗时**随机器负载剧烈波动**：空闲时 ~15s；本会话并发多个 Gradle daemon +
+用户 IDEA 时 **4~7 分钟**（卡在 `ApplicationLoader.initApplication:189` 等 `prepareUiFuture`，
+jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改插件）。
+默认 `-PverifyTimeout=420` 在负载高时**不够**，报 exit code 2（timeout）会误导成"插件有问题"。
+**排查超时先看 `idea.log` 里 `EnhanceMerge i18n` 就绪行是否已出现**（出现=只是慢，加大
+`-PverifyTimeout=600` 重跑即可）；确属插件错误时该行缺失且日志有 ERROR。
+
 ## 依赖边界（硬约束）
 
 - **禁止引入 SVNKit** 或任何外部 Maven 坐标；所需类全部由 IntelliJ SDK 提供。
-- `intellij { version.set("2022.1"); type.set("IC"); plugins.set(listOf("Subversion")); updateSinceUntilBuild.set(false) }`
-  —— **必须**显式把捆绑的 Subversion 插件加入 `plugins`，否则 `import org.jetbrains.idea.svn.*` 编译期找不到类。
-- `patchPluginXml { sinceBuild.set("221"); untilBuild.set("252.*") }`（221 = IDEA 2022.1 首个 build；252.* = 已验证上限 2025.2）。
+- `intellij { version.set("2022.1"); type.set("IC"); updateSinceUntilBuild.set(false) }` + **必须**把 Subversion 插件加入 `plugins`，
+  否则 `import org.jetbrains.idea.svn.*` 编译期找不到类。**但引用形式随 IDE 版本而变**（2026-10-18 实证）：
+  - **2022.1 ~ 2025.x**：IDEA 内置 svn4idea → `plugins.set(listOf("Subversion"))`；
+  - **2026.x**：JetBrains 已把 SVN **unbundle**（`ideaIC-2026.2.3/plugins/` 下只有 `vcs-git*`，无 `svn4idea`），
+    再写 `"Subversion"` 会报 `Cannot find builtin plugin 'Subversion'`；须按 `id:version` 从 Marketplace 取
+    → `plugins.set(listOf("Subversion:262.10968.211"))`。版本号可从 `runPluginVerifier` 报告的
+    `dependencies.txt` 里查到（verifier 会自动按 IDE 版本解析出配套的 SVN 插件 build）。
+    当前脚本按 `version.get().startsWith("2026")` 自动切换，`-PsvnMarketplaceVersion=<版本>` 可覆盖。
+    **注意**：默认（2022.1）构建必须走内置版本，否则会用 2026 版 svn4idea 编译却对外声明支持 2022.1。
+- `patchPluginXml { sinceBuild.set("221"); untilBuild.set("262.*") }`（221 = IDEA 2022.1 首个 build；262.* = 已验证上限 2026.2.3）。
 - `plugin.xml`：`<depends>com.intellij.modules.vcs</depends>` + `<depends>Subversion</depends>` + `<idea-version since-build="221"/>`。
 - **Kotlin stdlib 不得打包**：`gradle.properties` 必须保留 `kotlin.stdlib.default.dependency=false`。
   否则 `verifyPluginConfiguration` 报 stdlib 冲突（官方警告），zip 会多背 1.8MB 的 stdlib + `annotations.jar`。
@@ -98,8 +136,14 @@ alwaysApply: false
   官方要求插件清理自己挂到界面上的东西。
 - 用户可见字符串走 `messages/*.properties` bundle，不硬编码。
 - **本地化必须语言包感知**（`EnhanceMergeBundle` 已实现，勿改回 `extends DynamicBundle` 默认解析）：
-  - `DynamicBundle.findLanguageBundle() != null` ⇒ 已装语言包，用 `DynamicBundle.getLocale()` 精确匹配；
+  - 语言包探测：`findLanguageBundle()` 非 null ⇒ 已装语言包，用 `DynamicBundle.getLocale()` 精确匹配；
   - 否则用 **`Locale.ROOT`** 取基包（英文）。
+  - **⚠️ 该方法在 2026.x 已搬家**：`DynamicBundle.findLanguageBundle()`（静态）被移除，搬到
+    `com.intellij.l10n.LocalizationUtil.findLanguageBundle()`（Kotlin object 实例方法）。
+    直接调旧入口编译出的字节码在 2026.2.3 上 `NoSuchMethodError`（Plugin Verifier 实证）。
+    `EnhanceMergeBundle.findLanguageBundle()` 已改为「新平台优先」的**反射桥接**（两条路都反射，
+    都不通就当没装语言包）—— 因为要同时支持 221~262，只能反射，勿"优化"回直接调用。
+    回归由 `EnhanceMergeBundleTest`（3 个用例，走 2022.1 classpath 的回退路径）钉住。
   - **JDK 陷阱（实测）**：在 `Locale.getDefault()=zh_CN` 的机器上，
     `getBundle(base, Locale.ENGLISH, …)` 仍会返回 `_zh_CN`；只有 `Locale.ROOT` 稳定拿基包。
   - properties 必须按 **UTF-8** 解码（`ResourceBundle` 默认 ISO-8859-1）。
@@ -129,7 +173,7 @@ alwaysApply: false
 - `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`
 - `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
 
-单测：`LogFilterTest`(25) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) = **46**。
+单测：`LogFilterTest`(25) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3) = **49**。
 
 ### 2026-10-18 官方规范合规整改（已完成）
 
@@ -192,12 +236,26 @@ alwaysApply: false
   （`getRelativeUrl` 返回可空，调用处已防护）。
 - 平台侧唯一已知变化：`com.intellij.ui.TableViewSpeedSearch` 新版为双参构造
   （本插件用 2022.1 单参，已加 try-catch 降级）。
-- `until-build=252.*`（2025.2）；更高版本须回归通过后再放开。
-  一键回归：`gradlew verifyOnIde -PideaVersion=<版本>`（内部按 OS 调 `scripts/verify-plugin.ps1|sh`：自动切 SDK 启沙箱、轮询就绪、扫插件异常日志，报 PASS/FAIL；`-PverifyAutoClose=true` 检查后关闭，`-PverifyTimeout` 放宽等待）。
+- 入口反射目标 `org.jetbrains.idea.svn.dialogs.WorkingCopyInfoPanel.getInfo()`：
+  **2022.1 与 2026.2.3 的 svn4idea 中类名/包名/签名完全一致**（已逐 jar 比对），注入机制无需改动。
+- `until-build=262.*`（2026.2.3）。一键回归：`gradlew verifyOnIde -PideaVersion=<版本>`（内部按 OS 调
+  `scripts/verify-plugin.ps1|sh`：自动切 SDK 启沙箱、轮询就绪、扫插件异常日志，报 PASS/FAIL；
+  `-PverifyAutoClose=true` 检查后关闭，`-PverifyTimeout` 放宽等待）。
+- **⚠️ 2026.x 走不了 `verifyOnIde -PideaVersion=2026.2.3`（工具链限制，非插件缺陷，2026-10-18 实证）**：
+  1. IDEA 2026.x 平台 jar 是 **Kotlin 2.4 元数据**，锁定的 Kotlin 1.7.22 编译器读不了
+     （`Incompatible classes were found in dependencies`），无法对着 2026 SDK 重新编译；
+  2. IPGP 1.17.3 起不了 2026.x 沙箱：新布局把 vmoptions 放到 `bin/win/idea64.exe.vmoptions`，
+     其中有 `-Xmx2048m` / `-ea` 等**不含 `=`** 的条目，触发 IPGP `resolveIdeHomeVariable`
+     的 `entry.split("=")` 解构下标 1 越界 → `IndexOutOfBoundsException: Index: 1, Size: 1`。
+  故 2026.x 的兼容性依据是 **Plugin Verifier**（自动按 IDE 版本解析配套 Marketplace 版 SVN 插件做二进制比对）；
+  入口链接与合并主流程需在真实 2026.2.3 人工过一遍。要恢复编译期回归能力须迁 IPGP 2.x + Kotlin 2.x（改动面大）。
 - **验证状态（务必知悉）**：`verify-plugin.ps1` 与 `verifyOnIde` 任务已在 Windows + IDEA 2022.1 实跑通过（PASS，issues 0）；
-  `runPluginVerifier`（官方 Plugin Verifier 1.410）用 `-PverifierLocalIde=G:/GradleRepository/idea/ideaIC-2022.1`
-  实跑结果 **Compatible**（IC-221.5080.210，报告在 `build/reports/pluginVerifier/`）；
+  `runPluginVerifier`（官方 Plugin Verifier **1.410**，已在 build.gradle.kts 里 pin 住，不再用会联网解析 latest 的 `VERSION_LATEST`）
+  用 `-PverifierLocalIde="G:/GradleRepository/idea/ideaIC-2022.1,G:/GradleRepository/idea/ideaIC-2026.2.3"`
+  （逗号分隔多目录）实跑：**IC-221.5080.210 与 IC-262.10968.63 两端均 Compatible**，2026.2.3 侧 0 兼容性问题
+  （仅 2 处 deprecated：`ActionToolbar.updateActionsImmediately`、`TableViewSpeedSearch` 单参构造，都仍可用不阻断），报告在 `build/reports/pluginVerifier/`；
   `verifyPlugin` / `verifyPluginConfiguration`（官方包结构与配置校验）均通过且**零告警**；
+  单测 **49 个**（`EnhanceMergeBundleTest` 3 个为新增）全过；
   `verify-plugin.sh`（Unix 版）本机无 bash **尚未实跑**，首次在 Linux/macOS 使用前请先人工执行一次确认。
 - **PowerShell 调用 gradlew 的坑**：`-PideaVersion=2022.1` 这类含点号的参数必须加引号
   （`"-PideaVersion=2022.1"`），否则会被 PowerShell 拆成 `-PideaVersion=2022` + `.1`，报 `Task '.1' not found`。

@@ -23,11 +23,21 @@
 - 项目/包名重命名：`SubversionEnhance` → `SvnMergeEnhance`，
   `com.svn.revisionselect` → `com.weixf.svn.mergeenhance`，
   插件名 `SVN Custom Merge` → `SVN Enhance Merge`，界面中文「自定义合并」→「增强合并」。
+- **支持范围上限 2025.2 → 2026.2.3**（`until-build=252.*` → `262.*`）：已通过
+  `runPluginVerifier` 对 IC-2022.1 与 IC-2026.2.3 两端的二进制 API 校验（两端均 Compatible，
+  2026.2.3 侧自动解析并比对了对应的 Marketplace 版 `Subversion 262.10968.211`）。
+  ⚠️ **IDEA 2026.x 起 JetBrains 已把 SVN 插件从发行版 unbundle**，在该版本上需先从
+  Marketplace 安装官方 **Subversion** 插件，否则本插件无法加载（`<depends>Subversion</depends>`）。
+- `runPluginVerifier` 固定使用 verifier-cli 1.410（原先默认 `latest` 每次联网解析，
+  偶发 connection reset 会让任务莫名失败）；`-PverifierLocalIde` 支持逗号分隔多个本地 IDE。
 - 安装包不再携带 Kotlin 标准库（官方要求，由 IDE 提供），体积 2.1MB → ~430KB。
 - 接入官方 `runPluginVerifier` 做 API 兼容性校验；`verifyPlugin` /
   `verifyPluginConfiguration` 零告警。
 
 ### 修复
+- **IDEA 2026.x 启动即崩**：`DynamicBundle.findLanguageBundle()` 在 2026.x 被移除
+  （搬到 `com.intellij.l10n.LocalizationUtil`），旧调用会抛 `NoSuchMethodError`；
+  改为「新平台优先」的反射桥接，两个版本都能正确判断是否装了语言包（新增 3 个单测钉住回退路径）。
 - 后台任务回调补齐 dispose 守卫：对话框关闭后不再写入已销毁的界面。
 - `mergeChecker.prepare()` 加互斥锁与 `@Volatile`，保证只执行一次且对所有线程可见。
 - 空格键切换勾选：`e.consume()` 移到 `keyPressed`（写在 `keyReleased` 不生效）。
