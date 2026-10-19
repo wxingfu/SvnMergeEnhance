@@ -48,7 +48,7 @@
   修复：① `allLoaded` 在模式 A 改为"缓冲分页到底"才算取完（`bufferPos >= buffer.size`），搜索扩充、`+N`、全部显示在该模式下恢复对整段区间的覆盖；
   ② `onFilterChanged` 新增 `dateRangeChanged` 判定（模式 A 内 From/To 变化也清空重拉，防抖后一次服务端查询）；
   ③ 搜索扩充循环改用「原始页为空」作统一到底信号，不再被模式 A 的 `allLoaded` 提前截断。
-- **GitHub Actions `Plugin Verifier` job 构建失败（`Could not find com.github.lgooddatepicker:LGoodDatePicker:11.2.1`）**：根因为该坐标并不在 Maven Central（仅存在于 jcenter 旧缓存等国内聚合镜像），CI 境外 runner 无法解析；且 `runPluginVerifier` 会再下一份 IDE 撑爆磁盘、连带 IDE 自带库解压不全。`Build and Test` job 因只需一份 IDE 侥幸成功。修复：将 `LGoodDatePicker-11.2.1.jar`（无传递依赖，MIT 许可）落地到仓库 `libs/`，改为 `implementation(files("libs/LGoodDatePicker-11.2.1.jar"))` 引入，解析 100% 确定、与网络/IDE 解压无关。
+- **GitHub Actions `Plugin Verifier` job 构建失败（`Could not find com.github.lgooddatepicker:LGoodDatePicker:11.2.1`）**：根因为该库当年只发布在已关停的 **JCenter**（版本号 `11.2.1`），Maven Central 与 JitPack 的 `11.2.1` 均无此构件；本机靠阿里云 `public` 聚合镜像缓存的 JCenter 旧构件才解析得到，CI 关了阿里云镜像即 404。其 GitHub 发布标签实为 `v11.2.1-Standard`，故改用 **JitPack**（`https://jitpack.io`，合法 Maven 仓库，按标签按需构建）坐标 `com.github.lgooddatepicker:LGoodDatePicker:v11.2.1-Standard`，并在 `repositories` 中始终声明 jitpack.io（CI 也需要）。`runPluginVerifier` 会再下一份 IDE 撑爆磁盘这点仍存在，但 LGoodDatePicker 改为网络源后不再依赖 IDE 自带库解压完整性。`Build and Test` job 因只需一份 IDE 侥幸成功，掩盖了该问题。
 - **点「Show All」后日期控件不更新**：对话框打开时起止日历取的是首屏范围，而加载走游标模式（过滤条件里没有日期）；
   点「全部显示」后列表覆盖整条历史、日历框却仍是那个窄区间，用户看到的信息自相矛盾，
   再点「重新整理」还会被它截回去。现在加载完成后自动把日历扩到已加载数据的实际范围（`LogFilterPanel.widenDateRangeTo`，只扩不收，不会拆掉手填的更宽区间）。
