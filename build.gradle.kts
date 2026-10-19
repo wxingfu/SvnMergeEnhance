@@ -104,7 +104,13 @@ dependencies {
     // 日期选择控件：过滤栏的 From/To 日历。
     // 选它而非 JXDatePicker：LGoodDatePicker 的 DatePickerSettings 可逐项配颜色/边框，
     // 能完全融入 IDEA 主题（见 LogFilterPanel.createDatePicker）。
-    implementation("com.github.lgooddatepicker:LGoodDatePicker:11.2.1")
+    //
+    // ⚠️ 以**本地 jar** 形式引入，而非 Maven 坐标：坐标 `com.github.lgooddatepicker:LGoodDatePicker:11.2.1`
+    // 并不在 Maven Central（CI 解析会 404），它只存在于国内聚合镜像（jcenter 旧缓存）等不稳定源；
+    // GitHub Actions 境外 runner 访问该镜像会失败，且 `runPluginVerifier` 还会再下一份 IDE 撑爆磁盘、
+    // 连带 IDE 自带库解压不全。落地 jar 后解析 100% 确定、与网络/IDE 解压无关。
+    // 该 jar 无传递依赖（POM 的 <dependencies> 为空），MIT 许可见 THIRD-PARTY-LICENSES.txt。
+    implementation(files("libs/LGoodDatePicker-11.2.1.jar"))
     // 纯逻辑单测：kotlin-test（JUnit5）+ mockk。
     // mockk 的用途：SvnChangeList / MergeContext 的构造需要 SvnVcs（IDE 组件），
     // 单测里只 stub 过滤/分页真正读到的 getter，避免为测试去启动 IDE。
