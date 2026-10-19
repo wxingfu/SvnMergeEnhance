@@ -5,6 +5,7 @@ import com.weixf.svn.mergeenhance.EnhanceMergeBundle
 import org.jetbrains.idea.svn.history.SvnChangeList
 import org.jetbrains.idea.svn.history.SvnCommittedChangesProvider
 import org.jetbrains.idea.svn.history.SvnRepositoryLocation
+import org.jetbrains.annotations.VisibleForTesting
 import org.jetbrains.idea.svn.integrate.MergeCalculatorTask
 import org.jetbrains.idea.svn.integrate.MergeContext
 
@@ -42,11 +43,23 @@ class LogPageLoader(
     private val dateRangeSource: ((filter: LogFilter) -> List<SvnChangeList>)? = null,
 ) {
 
-    /** 模式 B 游标：已加载到的最小修订号；`-1` 表示从 HEAD 开始。 */
+    /**
+     * 模式 B 游标：已加载到的最小修订号；`-1` 表示从 HEAD 开始。
+     *
+     * `@Volatile`：由后台分页任务写、EDT 读（工具栏 `+N` 的 `isVisible/isEnabled`、
+     * `loadMore()` 的提前返回），没有它时 EDT 可能读到旧值，表现为按钮显隐滞后一拍。
+     */
+    @Volatile
     var cursor: Long = -1L
         private set
 
-    /** 是否已取完（模式 B 到底 / 模式 A 已整段拉完）。 */
+    /**
+     * 是否已取完（模式 B 到底 / 模式 A 已整段拉完）。
+     *
+     * 同上：`@Volatile` 保证后台写入对 EDT 立即可见（否则「+N」按钮会在到底后仍可点，
+     * 点了没反应）。
+     */
+    @Volatile
     var allLoaded: Boolean = false
         private set
 
@@ -63,7 +76,15 @@ class LogPageLoader(
         bufferReady = false
     }
 
-    /** 取下一页（至多 `pageSize` 条满足全部过滤条件的修订）。 */
+    /**
+     * 取下一页（至多 `pageSize` 条满足全部过滤条件的修订）。
+     *
+     * ⚠️ **仅测试使用**：对话框一律走 [loadNextPageRaw]（要在内存中保留"原始全集"，
+     * 改搜索词时才能就地重过滤，见 `RevisionSelectDialog.loadedAll`）。保留它是因为
+     * `LogPageLoaderTest` 用它钉住"服务端/客户端双层过滤"的语义；生产侧请勿再引入调用点，
+     * 否则两套分页语义并存会漂移（本类的 `allLoaded` 判定在两条路径上刻意不同）。
+     */
+    @VisibleForTesting
     fun loadNextPage(filter: LogFilter, pageSize: Int): List<SvnChangeList> =
         if (filter.hasDateRange()) loadFromDateRange(filter, pageSize) else loadByCursor(filter, pageSize)
 

@@ -127,6 +127,22 @@ class EnhanceMergeSettings : PersistentStateComponent<EnhanceMergeSettings.State
         return Date(now - TimeUnit.DAYS.toMillis(days.toLong()))
     }
 
+    /**
+     * 打开修订选择对话框时「日期区间」开关的初始值。
+     *
+     * 为什么需要这个判定（曾经踩过的坑）：设置里的「默认日期范围（天）> 0」要求"打开就按最近 N 天
+     * 过滤"，而过滤栏只在开关为 true 时才把日历里的起止值交给过滤条件（见
+     * `LogFilterPanel.buildFilter()`）。早期实现只调用 `initDateRange()` 填日历、没打开开关，
+     * 于是该设置项**完全不生效**——界面既看不到日期面板，也不会按日期重拉，且没有任何反馈。
+     * 判定收敛成纯函数，由单测钉住（构造函数不需要 IDE 实例，可直接 new 出来测）。
+     *
+     * 语义：配了默认日期范围 ⇒ 每次打开都开启；否则沿用用户上次手动选择的状态。
+     *
+     * @param lastUsed 上次使用时用户手动选择的开关状态（持久化偏好），缺省取当前设置值
+     */
+    fun dateRangeEnabledOnOpen(lastUsed: Boolean = state.dateRangeEnabled): Boolean =
+        state.defaultDateRangeDays > 0 || lastUsed
+
     // ------------------------------------------------------------ 内部
 
     /** 把非法/越界值拉回合法范围（配置文件可能被手改过）。 */

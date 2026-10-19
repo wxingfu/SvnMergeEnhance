@@ -70,6 +70,42 @@
 - `mergeChecker.prepare()` 加互斥锁与 `@Volatile`，保证只执行一次且对所有线程可见。
 - 空格键切换勾选：`e.consume()` 移到 `keyPressed`（写在 `keyReleased` 不生效）。
 - 快捷键注册改用对话框自身的 `Disposable`，避免泄漏。
+- **设置项「默认日期范围（天）」完全不生效**（2026-10-19 代码审查）：对话框只调用
+  `initDateRange()` 填起止日历，没打开「日期区间」开关，而过滤栏**只在开关打开时**才把起止值
+  交给过滤条件（`LogFilterPanel.buildFilter()`）→ 设了 N 天既不按日期重拉、界面也看不到日期面板，
+  属"配置写了但静默失效"。修复：新增 `EnhanceMergeSettings.dateRangeEnabledOnOpen()`
+  （配了默认范围就开启）与 `LogFilterPanel.applyDefaultDateRange()`（开关 + 填值 + 显隐；
+  刻意**不**写入"上次使用"偏好，免得用户把设置改回 0 后当初被强制打开的开关残留），
+  并新增 `EnhanceMergeSettingsTest`（8 用例）钉住这层判定。
+- **关闭项目时注入的「Enhance Merge…」链接从未被摘除**：`removeInjectedLinks()` 首行
+  `if (project.isDisposed) return` 让清理代码永不执行——`ComponentManagerImpl.dispose()`
+  **先把容器状态置为 `DISPOSED`，再 `Disposer.dispose()` 子节点**（已 javap 核对 2022.1 SDK），
+  子 `Disposable` 被执行时 `isDisposed()` 恒为 true。改为不加守卫、try/catch 兜住
+  `AlreadyDisposedException`，并在 EDT 上**同步**执行（IDE 退出阶段排进事件队列的请求可能永不被调度）。
+- **搜索可能把十万级修订拉进内存**：`runExtendSearch` 只有轮数上限（200 轮），而单轮最多可拉
+  `MAX_BATCHES × pageSize` 条，最坏约 10 万条 `SvnChangeList`（每条还带受影响路径）常驻已加载全集。
+  新增累计原始条数上限 `MAX_SEARCH_TOTAL_RAW = 20_000` 作为第二道闸（取「全部显示」量级的 2 倍）。
+- **合并状态计算的并发竞态**：`OneShotMergeInfoHelper` 内部的 `myPartiallyMerged` 是普通 `HashMap`，
+  后台 `checkList()` 写、EDT `getNotMergedPaths()` 读，且首屏 / +N / 搜索扩充会并发起多个计算任务。
+  现在 `prepare` / `checkList` / `getNotMergedPaths` 共用一把锁（`checkList` **逐行**加锁，
+  避免 EDT 等整批算完而卡 UI），且 prepare 未就绪时 EDT 直接返回空、不进锁（否则要等一次 svn 调用）。
+- **合并状态计算的异常捕获过窄**：`prepare()` / `checkList()` 原先只捕 `VcsException`，
+  非受检异常逃出后台任务会被平台记成插件内部错误并上报；改为 `catch (Exception)` + `LOG.warn`。
+- **勾选修订时状态栏在 EDT 上全量重算（大选集卡顿）**：每次勾选都对**全部**选中修订执行
+  `collectChanges()`（为每个路径构造 `Change` + 跨修订合并），「全选 + 全部显示」后一次勾选就要
+  遍历上万条。改为防抖重算（`Alarm`，200ms，绑对话框 disposable）：状态栏沿用上一次的数字立即刷新，
+  连续勾选只在停手后算一次。
+  ⚠️ 不能用「各修订路径数之和」代替：`CommittedChangesTreeBrowser.collectChanges` 末尾的
+  `zipChanges()` 会把同一文件在多个修订里的改动**合并成一条**，两种算法不等价。
+- **`LogPageLoader.cursor` / `allLoaded` 未加 `@Volatile`**：这两个字段由后台分页任务写、EDT 读
+  （工具栏「+N」的显隐与 `loadMore()` 的提前返回），可能读到旧值导致按钮滞后一拍。已补 `@Volatile`。
+- **首屏加载的回调缺 disposed 守卫**：`MergeFlow.openRevisionSelect` 的 `onSuccess` / `onThrowable`
+  未判断项目是否已关闭，加载期间关掉项目会对已释放的 project 弹模态框 / 建对话框。已补守卫。
+- **设置页 Bug-ID 正则输入尾部空格时永远显示"已修改"**：`isModified()` 比原始文本、`apply()` 写
+  trim 后文本，二者永远不等。改为共用 `normalizedBugIdPattern()`（trim + 空串回退默认）。
+- **修订选择对话框不可拉伸**：长提交说明与深路径只能靠滚动看；改为 `setResizable(true)`（尺寸仍记忆）。
+- 清理：删除残留的空 `libs/` 目录（依赖已改为 JitPack 网络源）；`LogPageLoader.loadNextPage` 标
+  `@VisibleForTesting`（生产一律走 `loadNextPageRaw`，两条路径的 `allLoaded` 语义刻意不同）。
 
 ### 规范（IntelliJ 官方插件开发规范整改，2026-10-18 全量审查）
 - **禁用 `javax.swing.Timer`**：过滤栏输入防抖与入口注入的兜底轮询改用平台 `Alarm`

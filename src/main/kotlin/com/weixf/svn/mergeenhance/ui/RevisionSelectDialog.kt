@@ -24,6 +24,7 @@ import com.intellij.ui.ClickListener
 import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.TableViewSpeedSearch
+import com.intellij.util.Alarm
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.table.TableView
@@ -46,7 +47,6 @@ import org.jetbrains.idea.svn.mergeinfo.MergeCheckResult
 import org.jetbrains.idea.svn.mergeinfo.OneShotMergeInfoHelper
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.vcs.VcsException
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Rectangle
@@ -182,6 +182,20 @@ class RevisionSelectDialog(
      */
     private val filterPanel = LogFilterPanel(disposable) { onFilterChanged() }
 
+    /**
+     * 状态栏「已选路径数」的重算防抖（绑对话框 disposable，关闭即作废）。
+     *
+     * 为什么需要：`collectChanges()` 要遍历**全部**选中修订、为每条路径构造 `Change`，
+     * 再做一次跨修订合并（`CommittedChangesTreeBrowser.zipChanges`）。「全选 + 全部显示」之后
+     * 每勾一次复选框就要重算上万条，在 EDT 上明显卡顿。勾选是高频操作，因此：
+     * - 状态栏先沿用上一次的 [pathCount]，文字立即刷新（用户感知不到 200ms 的滞后）；
+     * - 真正的重算排进 [Alarm]，连续勾选只在停手后算一次。
+     */
+    private val pathCountAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, disposable)
+
+    /** 状态栏当前显示的「已选路径数」；防抖期间沿用旧值，停手后重算。 */
+    private var pathCount = 0
+
     /** 当前生效的过滤条件（Load More / 全部显示时复用，避免重复构建）。 */
     private var currentFilter: LogFilter = LogFilter()
 
@@ -256,6 +270,9 @@ class RevisionSelectDialog(
     init {
         // 标题用 MergeContext 自带的 mergeTitle（形如 "Merge from <branch>"，与原版一致）
         title = context.mergeTitle
+        // 允许拉伸：DialogWrapper 默认不可调整大小，而本对话框要同时容纳长提交说明、
+        // 深路径与右栏变更树，固定尺寸只能靠滚动看；尺寸仍按 getDimensionServiceKey 记忆。
+        setResizable(true)
         setOKButtonText(EnhanceMergeBundle.message("button.merge.selected"))
         // DialogWrapper.init() 会同步调 createCenterPanel()；因此上面所有"供 UI 使用"的
         // 字段必须在 init 之前声明（见各字段的声明顺序注释）。
@@ -276,7 +293,9 @@ class RevisionSelectDialog(
         // 而首屏数据是调用方按"无日期"加载的，不重查会出现"界面显示最近 7 天、列表却是全量"。
         val defaultFrom = settings.defaultFromDate()
         if (defaultFrom != null) {
-            filterPanel.initDateRange(defaultFrom, Date())
+            // 必须用 applyDefaultDateRange 而非 initDateRange：前者会同时打开「日期区间」开关，
+            // 否则 buildFilter() 丢弃日历值，本设置项不生效（界面无任何反馈的静默失效）。
+            filterPanel.applyDefaultDateRange(defaultFrom, Date())
             onFilterChanged()
         }
     }
@@ -603,14 +622,21 @@ class RevisionSelectDialog(
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
                 var rounds = 0
+                var scanned = 0
                 // 以「原始页为空」作为统一的到底信号（模式 A：缓冲分页完；模式 B：allLoaded）。
                 // 不能用 !loader.allLoaded 作循环条件——模式 A 曾在整段拉完时立即置 allLoaded，
                 // 会让扩充循环一轮即停，搜索永远只覆盖日期区间的前 pageSize 条原始数据。
-                while (rounds++ < MAX_SEARCH_ROUNDS) {
+                //
+                // 除了轮数上限还必须有**累计原始条数**上限：单轮最多可拉
+                // MAX_BATCHES × pageSize 条（批量补页），200 轮 × 500 = 10 万条 SvnChangeList
+                // （每条还带着受影响路径）会常驻在 loadedAll 里。轮数上限挡不住"每轮拉得很多"，
+                // 只有总数上限能真正兜住内存。
+                while (rounds++ < MAX_SEARCH_ROUNDS && scanned < MAX_SEARCH_TOTAL_RAW) {
                     indicator.checkCanceled()
                     val raw = loader.loadNextPageRaw(filter, pageSize)
                     if (raw.isEmpty()) break
                     collected.addAll(raw)
+                    scanned += raw.size
                     val matched = collected.count { filter.matchesClientSide(it) }
                     if (matched >= SEARCH_MATCH_TARGET) break
                     indicator.text2 = EnhanceMergeBundle.message(
@@ -768,10 +794,17 @@ class RevisionSelectDialog(
     /**
      * 对齐原版 `ToBeMergedDialog.getAlreadyMergedPaths`：某修订中**已合并**的文件（not-merged 集合的补集）。
      * 结果存入 [alreadyMerged]，由装饰器在右侧文件行后追加 `[Already merged]`。
+     *
+     * 两处与并发相关的约束：
+     * - 本方法在 **EDT** 调用，而 `myPartiallyMerged` 由后台 [refreshMergeStatus] 写入，
+     *   故读必须落在同一个 [mergeCheckerLock] 上（逐行加锁后这里最多等一行的时间）；
+     * - prepare 未就绪时直接返回空，不进锁 —— prepare 是一次 svn 调用，EDT 等它会冻 UI；
+     *   就绪后 [refreshMergeStatus] 会补刷一次右栏，标记不会丢。
      */
     private fun getAlreadyMergedPaths(list: SvnChangeList): List<Change> {
+        if (!mergeCheckerPrepared) return emptyList()
         val notMerged = try {
-            mergeChecker.getNotMergedPaths(list)
+            synchronized(mergeCheckerLock) { mergeChecker.getNotMergedPaths(list) }
         } catch (e: Exception) {
             LOG.warn("Failed to get not-merged paths for r${list.number}", e)
             return emptyList()
@@ -784,28 +817,55 @@ class RevisionSelectDialog(
 
     private fun updateStatus() {
         val selected = selectedChangeLists()
-        val paths = if (selected.isEmpty()) 0 else collectChanges(selected).size
+        // 选集清空时立即归零，不必等防抖任务（否则"取消全选"后数字还会悬着 200ms）
+        if (selected.isEmpty()) pathCount = 0
+        refreshStatusLabel(selected)
+        isOKActionEnabled = selected.isNotEmpty()
+        // 「加载更多」的可用状态依赖 allLoaded / loadingMore
+        refreshToolbar()
+        schedulePathCountRecalc()
+    }
+
+    /** 只刷新状态栏文字；不重算「已选路径数」（重算由 [schedulePathCountRecalc] 防抖触发）。 */
+    private fun refreshStatusLabel(selected: List<SvnChangeList> = selectedChangeLists()) {
+        if (!::statusLabel.isInitialized) return
         val revisionRange = if (model.rowCount == 0) "-" else {
             val newest = model.getRowValue(0).number.toString()
             val oldest = model.getRowValue(model.rowCount - 1).number.toString()
             EnhanceMergeBundle.message("status.revision.range", newest, oldest)
         }
-        if (::statusLabel.isInitialized) {
-            statusLabel.text = if (model.rowCount == 0 && currentFilter.isFiltering()) {
-                EnhanceMergeBundle.message("status.no.match")
-            } else {
-                EnhanceMergeBundle.message(
-                    "status.revision.select",
-                    model.rowCount.toString(),
-                    revisionRange,
-                    selected.size.toString(),
-                    paths.toString(),
-                )
-            }
+        statusLabel.text = if (model.rowCount == 0 && currentFilter.isFiltering()) {
+            EnhanceMergeBundle.message("status.no.match")
+        } else {
+            EnhanceMergeBundle.message(
+                "status.revision.select",
+                model.rowCount.toString(),
+                revisionRange,
+                selected.size.toString(),
+                pathCount.toString(),
+            )
         }
-        isOKActionEnabled = selected.isNotEmpty()
-        // 「加载更多」的可用状态依赖 allLoaded / loadingMore
-        refreshToolbar()
+    }
+
+    /**
+     * 排一次「已选路径数」重算（防抖：先取消未触发的请求，再排一个新的）。
+     *
+     * 为什么不能增量累加：同一文件在多个选中修订里都被改动时，`collectChanges` 会把它们
+     * **合并成一条**（`CommittedChangesTreeBrowser.zipChanges`），所以"各修订路径数之和"
+     * 并不等于合并后的条数，只能整体重算。
+     */
+    private fun schedulePathCountRecalc() {
+        pathCountAlarm.cancelAllRequests()
+        pathCountAlarm.addRequest(
+            {
+                if (isDisposed || context.project.isDisposed) return@addRequest
+                val count = selectedChangeLists().let { if (it.isEmpty()) 0 else collectChanges(it).size }
+                if (count == pathCount) return@addRequest
+                pathCount = count
+                refreshStatusLabel()
+            },
+            PATH_COUNT_DEBOUNCE_MS,
+        )
     }
 
     override fun createSouthAdditionalPanel(): JPanel {
@@ -948,6 +1008,18 @@ class RevisionSelectDialog(
     /**
      * 对齐原版 `ToBeMergedDialog.refreshListStatus`：后台线程分批计算每行的合并状态，
      * 每批完成后触发重绘。状态枚举与图标均复用原版 `ListMergeStatus`。
+     *
+     * ## 为什么 `checkList()` 也要进锁（原版没有这一步）
+     *
+     * `OneShotMergeInfoHelper` 内部 `myPartiallyMerged` 是**普通 HashMap**：
+     * `checkList()` 会 `put`（后台线程）、`getNotMergedPaths()` 会 `get`（EDT，见
+     * [getAlreadyMergedPaths]）。原版只有一个后台任务在算，本插件却可能同时有首屏 / +N /
+     * 搜索扩充**多个**任务并发 `put`，再叠加 EDT 的并发 `get` —— 非同步 HashMap 并发写会丢数据、
+     * 扩容期间并发读在极端情况下还会成环。故这里把每行的 `checkList` 放进同一个
+     * [mergeCheckerLock]（**逐行加锁**，不锁整批：否则 EDT 侧读一个 map 要等几百行算完，卡 UI）。
+     *
+     * `prepare()` 仍独占该锁（它是 svn 调用，耗时），保证只执行一次且没有别的线程
+     * 拿着半初始化的缓存去查。
      */
     private fun refreshMergeStatus(lists: List<SvnChangeList>) {
         if (lists.isEmpty()) return
@@ -963,7 +1035,9 @@ class RevisionSelectDialog(
                         mergeChecker.prepare()
                         mergeCheckerPrepared = true
                         preparedHere = true
-                    } catch (e: VcsException) {
+                    } catch (e: Exception) {
+                        // 不只是 VcsException：prepare 走的是 svn propget + 属性解析，
+                        // 任何非受检异常逃出后台任务都会被平台记成插件内部错误并上报。
                         LOG.warn("Failed to prepare merge checker", e)
                         return@executeOnPooledThread
                     }
@@ -977,11 +1051,14 @@ class RevisionSelectDialog(
             }
             var cnt = REPAINT_BATCH_SIZE
             for (list in lists) {
-                try {
-                    mergeStatusMap[list.number] = toListMergeStatus(mergeChecker.checkList(list))
-                } catch (e: VcsException) {
+                // 逐行加锁：既消除并发 put，又让 EDT 侧的 get 最多等一行的时间
+                val status = try {
+                    synchronized(mergeCheckerLock) { toListMergeStatus(mergeChecker.checkList(list)) }
+                } catch (e: Exception) {
                     LOG.warn("Failed to check merge status for r${list.number}", e)
+                    null
                 }
+                if (status != null) mergeStatusMap[list.number] = status
                 if (--cnt <= 0) {
                     cnt = REPAINT_BATCH_SIZE
                     repaintTable()
@@ -1028,6 +1105,18 @@ class RevisionSelectDialog(
         const val MAX_SEARCH_ROUNDS = 200
 
         /**
+         * 单次搜索最多把多少条**原始**修订拉进内存（[MAX_SEARCH_ROUNDS] 之外的第二道闸）。
+         *
+         * 为什么必须有它：轮数上限挡不住"每轮拉得多"——单轮最多
+         * `MAX_BATCHES(10) × pageSize(最大 500)` = 5000 条，200 轮即 10 万条
+         * `SvnChangeList`（每条还带受影响路径）常驻在已加载全集中，沙箱默认堆（750m）撑不住。
+         * 取值对齐「全部显示」的量级（`MAX_LOAD_ALL_ROUNDS × pageSize`，约 1 万条）再放宽一倍：
+         * 搜索到的内容本来就比"全部显示"更常用，超出这个量说明条件太宽，应缩小关键词
+         * 或显式点「全部显示」，而不是让"边搜边扩"默默吞下整条历史。
+         */
+        const val MAX_SEARCH_TOTAL_RAW = 20_000
+
+        /**
          * 「+N」两个动作的每次追加条数（对齐原版 `ToBeMergedDialog.MoreXAction`）。
          * 与设置里的「每页条数」无关：那两个按钮是固定步进。
          */
@@ -1048,6 +1137,9 @@ class RevisionSelectDialog(
 
         /** 每算完多少行就重绘一次（避免每行都 repaint）。 */
         const val REPAINT_BATCH_SIZE = 10
+
+        /** 状态栏「已选路径数」的重算防抖间隔（毫秒）：连续勾选只在停手后重算一次。 */
+        const val PATH_COUNT_DEBOUNCE_MS = 200
 
         /** 工具栏的 place 标识：ActionToolbar 用它区分"同组件上的多个工具栏"。 */
         const val TOOLBAR_PLACE = "SvnEnhanceMergeRevisions"

@@ -65,7 +65,14 @@ class LogFilterPanel(
      */
     private val enabledFields: LinkedHashSet<LogFilterField> = LinkedHashSet(restoredFilterFields())
 
-    private var dateRangeEnabled: Boolean = settings.dateRangeEnabled
+    /**
+     * 「日期区间」开关。
+     *
+     * 初始值走 [EnhanceMergeSettings.dateRangeEnabledOnOpen] 而不是直接取
+     * `settings.dateRangeEnabled`：配了「默认日期范围（天）> 0」时必须一并打开开关，
+     * 否则 [buildFilter] 会把日历里的起止值丢掉，该设置项静默失效。
+     */
+    private var dateRangeEnabled: Boolean = settings.dateRangeEnabledOnOpen()
     private var useRegex: Boolean = settings.useRegex
     private var caseSensitive: Boolean = settings.caseSensitive
 
@@ -406,6 +413,24 @@ class LogFilterPanel(
         suppressEvents = true
         setPickers(min, max)
         suppressEvents = false
+    }
+
+    /**
+     * 应用设置里的「默认日期范围（天）」：**打开开关**并填入起止值（随后由对话框触发一次重查）。
+     *
+     * 与 [initDateRange] 的区别：后者只填值、不动开关（用于"起止日历回到当前可见范围"这类
+     * 不改变结果集的场景）；本方法对应"用户配置了默认日期范围"——**必须同时打开开关**，
+     * 否则 [buildFilter] 会把这两个值丢掉，设置项形同虚设（界面也看不到日期面板，无任何反馈）。
+     *
+     * 刻意**不**写回设置（不调 `persistOptions()`）：这是"每次打开对话框施加一次"的默认值，
+     * 不该污染"上次手动选择"的偏好——否则用户把设置改回 0 之后，当初被强制打开的 `true`
+     * 会残留成他的偏好，日期区间再也关不掉。
+     */
+    fun applyDefaultDateRange(from: Date, to: Date) {
+        dateRangeEnabled = true
+        initDateRange(from, to)
+        syncDateVisibility()
+        updateByButton()
     }
 
     /**

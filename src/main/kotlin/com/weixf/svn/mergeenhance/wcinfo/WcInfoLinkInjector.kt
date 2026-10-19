@@ -135,29 +135,41 @@ private class LinkInstaller(private val project: Project) : Disposable {
      * 但 SVN 面板的纵向容器是长寿命的，会一直持有这些 `LinkLabel`
      * （连同 client property 与其背后的项目引用）。
      *
-     * 全程 `runCatching`：IDE 关闭过程中 Swing 组件可能已被拆除，此时清理失败
+     * ⚠️ **不能在这里用 `project.isDisposed` 提前返回**（以前正是这么写的，等于永不清理）：
+     * 2022.1 SDK 的 `ComponentManagerImpl.dispose()` 字节码（已用 javap 核对）先把容器状态
+     * 置为 `DISPOSE_IN_PROGRESS`/`DISPOSED`，**之后**才 `Disposer.dispose()` 子节点——
+     * 也就是说本回调被执行时 `project.isDisposed()` 恒为 true，加了守卫就一次都不会清理。
+     *
+     * 全程 try/catch：IDE 关闭过程中 Swing 组件可能已被拆除，或 `ToolWindowManager.getInstance()`
+     * 对已释放的 project 抛 `AlreadyDisposedException`（`RuntimeException`），此时清理失败
      * 不应影响关闭流程（组件反正也要被销毁了）。
      */
     private fun removeInjectedLinks() {
-        if (project.isDisposed) return
-        ApplicationManager.getApplication().invokeLater {
-            runCatching {
-                if (project.isDisposed) return@runCatching
+        val cleanup = Runnable {
+            try {
                 val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(ToolWindowId.VCS)
-                    ?: return@runCatching
-                val hosts = mutableListOf<Container>()
-                for (content in toolWindow.contentManager.contents) {
-                    collectLabelHosts(content.component, hosts)
+                if (toolWindow != null) {
+                    val hosts = mutableListOf<Container>()
+                    for (content in toolWindow.contentManager.contents) {
+                        collectLabelHosts(content.component, hosts)
+                    }
+                    for (host in hosts) {
+                        val own = host.components.filter { isOurLabel(it) }
+                        if (own.isEmpty()) continue
+                        own.forEach { host.remove(it) }
+                        host.revalidate()
+                        host.repaint()
+                    }
                 }
-                for (host in hosts) {
-                    val own = host.components.filter { isOurLabel(it) }
-                    if (own.isEmpty()) continue
-                    own.forEach { host.remove(it) }
-                    host.revalidate()
-                    host.repaint()
-                }
+            } catch (e: Exception) {
+                LOG.warn("Failed to remove injected Enhance Merge links on dispose", e)
             }
         }
+        // 已在 EDT 时同步执行：IDE 退出阶段排进事件队列的请求可能永远不会被调度，
+        // 那就等于没清理。项目关闭走 EDT，这里是主路径；非 EDT 时仍走 invokeLater
+        // （Swing 组件只能在 EDT 上动）。
+        val app = ApplicationManager.getApplication()
+        if (app.isDispatchThread) cleanup.run() else app.invokeLater(cleanup)
     }
 
     /** 收集"直接包含我们自己的 LinkLabel"的容器。 */

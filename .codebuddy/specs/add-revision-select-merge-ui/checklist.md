@@ -142,9 +142,12 @@
       含 `-` 文本不误判为区间 / 高亮 / 字段选择 / 区间解析工具）
 - [x] `QuantitySelection` 语义单测 **9 用例**（全选后排除、恢复、清空、再全选；
       `areAllSelected()` 原版语义固化）
-- [x] `LogPageLoader` 双模式单测 **12 用例**（日期模式内存分页 + 客户端过滤；游标模式推进 /
+- [x] `LogPageLoader` 双模式单测 **14 用例**（日期模式内存分页 + 客户端过滤；游标模式推进 /
       到底 / 整页保守 / `revTo+1` 边界 / `revFrom` 早停 / 补批 / `MAX_BATCHES` 上限 / 重开）
-- [x] `gradlew test` 全绿（**46 用例 0 失败**）
+- [x] `EnhanceMergeSettings` 单测 **8 用例**（默认日期范围 / `dateRangeEnabledOnOpen` 开关联动 /
+      每页条数 clamp / 存储值越界归一化 / Bug-ID 正则非法回退 null / 过滤字段 id 往返）
+      —— 2026-10-19 新增，用于钉住「默认日期范围设置静默失效」这个 bug
+- [x] `gradlew test` 全绿（**63 用例 0 失败**）
 - [x] `gradlew clean test buildPlugin verifyPlugin` 全通过（zip **434KB**，见下方「官方规范合规」）
 - [x] `gradlew verifyOnIde -PideaVersion=2022.1` → PASS（0 插件异常）
 

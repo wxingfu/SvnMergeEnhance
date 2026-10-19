@@ -193,6 +193,19 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   `mergeCheckerLock` 互斥，保证 `prepare()` 只执行一次（`OneShotMergeInfoHelper` 缓存只能初始化一次）。
 - 资源释放：Timer / messageBus 订阅 / 注入到别人容器里的组件，都要在 dispose 时清理；
   快捷键注册必须传 `Disposable`（传 null 会随组件树泄漏）。
+- **⚠️ `dispose()` 里禁止用 `project.isDisposed` 提前返回**（2026-10-19 审查实测，曾踩坑）：
+  2022.1 SDK 的 `ComponentManagerImpl.dispose()` 字节码**先把容器状态置为 `DISPOSED`，再
+  `Disposer.dispose()` 子节点**（已用 javap 核对），因此注册在 project 上的子 `Disposable`
+  被执行时 `project.isDisposed()` **恒为 true** —— 加了守卫就等于清理代码永不执行
+  （`WcInfoLinkInjector.removeInjectedLinks()` 曾因此是死代码）。正确写法：清理逻辑用
+  try/catch 兜住 `AlreadyDisposedException`（`RuntimeException`），且**已在 EDT 时同步执行**
+  （IDE 退出阶段排进事件队列的请求可能永远不会被调度）。
+- **`OneShotMergeInfoHelper` 不是线程安全的**：内部 `myPartiallyMerged` 是普通 `HashMap`，
+  `checkList()` 在后台写、`getNotMergedPaths()` 在 EDT 读。故 `prepare()` / `checkList()` /
+  `getNotMergedPaths()` 必须走同一个 `mergeCheckerLock`；`checkList` 要**逐行加锁**（锁整批会让
+  EDT 等几百行算完而卡 UI），EDT 侧在 `mergeCheckerPrepared == false` 时直接返回空、不进锁
+  （否则要等一次 svn 调用冻住界面）。原版只有一个后台任务在算，本插件首屏 / +N / 搜索扩充
+  会并发起多个，风险比原版更高。
 - 按键消费（`e.consume()`）必须写在 `keyPressed`——写在 `keyReleased` 不起作用。
 - 纯图标按钮必须给 `accessibleContext.accessibleName`（官方无障碍要求）。
 
@@ -208,7 +221,47 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`
 - `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
 
-单测：`LogFilterTest`(25) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3) + `BundleKeysTest`(4) = **53**。
+单测：`LogFilterTest`(25) + `LogPageLoaderTest`(14) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3)
++ `BundleKeysTest`(4) + `EnhanceMergeSettingsTest`(8) = **63**。
+（`LogPageLoaderTest` 由 12 增至 14 是 R1~R4 时补的，旧文档里的 12 / 53 / 55 均已落后，以 63 为准。）
+
+### 2026-10-19 代码审查修复（第二轮；`test` 63 全过 + `buildPlugin` + `verifyOnIde` PASS）
+
+| 项 | 处理 |
+|---|---|
+| **P1 设置项「默认日期范围」完全不生效** | 对话框只调 `filterPanel.initDateRange()` 填日历，没打开「日期区间」开关，而 `buildFilter()` 只在开关打开时才采纳起止值 → 设置静默失效。新增 `EnhanceMergeSettings.dateRangeEnabledOnOpen()`（纯函数、可单测）决定开关初值，新增 `LogFilterPanel.applyDefaultDateRange()`（开关 + 填值 + 显隐 + tooltip，**刻意不持久化**，免得污染"上次手动选择"偏好）；新增 `EnhanceMergeSettingsTest` 8 用例钉住 |
+| **P1 dispose 清理是死代码** | `removeInjectedLinks()` 首行 `if (project.isDisposed) return` 使其永不执行（见「线程与生命周期」的 dispose 时序坑）。改为不加守卫、try/catch 兜 `AlreadyDisposedException`、EDT 同步执行 |
+| **P1 搜索扩充无总量上限** | `runExtendSearch` 只有轮数上限 `MAX_SEARCH_ROUNDS=200`，单轮最多 `MAX_BATCHES×pageSize` 条 → 最坏 10 万条 `SvnChangeList` 常驻内存。新增 `MAX_SEARCH_TOTAL_RAW = 20_000`（第二道闸，取「全部显示」量级的 2 倍） |
+| **P2 MergeChecker 并发竞态** | `checkList()` 逐行进 `mergeCheckerLock`（消除并发 `put`），EDT 侧 `getNotMergedPaths()` 同锁读且在未 prepare 时直接返回空 |
+| **P2 异常捕获过窄** | `prepare()` / `checkList()` 由只捕 `VcsException` 改为 `catch (Exception)` + `LOG.warn`：非受检异常逃出后台任务会被平台记成插件内部错误并上报 |
+
+审查中**确认不是缺陷、勿改**的两处（已与原版 `ToBeMergedDialog.getAlreadyMergedPaths` 比对）：
+① `notMerged` 为空时返回空列表（原版同款，`myPartiallyMerged` 语义是"部分合并"）；
+② `SvnCommittedChangesProvider.getCommittedChanges` 走 `getCommittedChangesImpl` 直连 `HistoryClient.doLog`，未碰 `CachedProvider` / `LoadedRevisionsCache`，符合"直连仓库"硬约束。
+
+**同轮审查的剩余项（第三批，已处理）**：
+- P2 `LogPageLoader.cursor` / `allLoaded` 加 `@Volatile`（后台写、EDT 读，「+N」按钮显隐不再滞后一拍）；
+- P2 `MergeFlow.openRevisionSelect` 的 `onSuccess` / `onThrowable` 均补 `project.isDisposed` 守卫
+  （加载期间项目被关闭时，不再对已释放的 project 弹模态框 / 建对话框）；
+- P2 `RevisionSelectDialog.updateStatus()` 不再每次勾选全量 `collectChanges()`：状态栏「已选路径数」
+  改为**防抖重算**（`pathCountAlarm`，200ms，绑对话框 disposable）——状态栏沿用上次数字立即刷新，
+  连续勾选只在停手后算一次。
+  ⚠️ **不能**用「各修订路径数之和」代替整体重算：`CommittedChangesTreeBrowser.collectChanges`
+  末尾会 `zipChanges()`，把同一文件在多个修订里的改动**合并成一条**（已 javap 核对），求和与
+  `collectChanges(selected).size` 不等价；它还会对传入列表就地排序，别把 `model.items` 直接传进去；
+- P3 `LogPageLoader.loadNextPage` 标 `@VisibleForTesting`：生产一律走 `loadNextPageRaw`，
+  两条路径的 `allLoaded` 语义**刻意不同**（Raw 版"缓冲分页到底"才算取完），勿再引入生产调用点；
+- P3 `EnhanceMergeConfigurable` 的 `isModified` / `apply` 共用 `normalizedBugIdPattern()`；
+- P3 对话框 `setResizable(true)`；删除残留的空 `libs/` 目录（依赖已改为 JitPack 网络源）。
+
+**复核后刻意不改**（勿当成遗漏）：
+- `MergeFlow.start` 的 `wcInfo.rootInfo.virtualFile`：`RootUrlInfo.getVirtualFile()` 源码声明
+  `@NotNull`（svn4idea `RootUrlInfo.java`），Kotlin 侧不是可空类型，加判空会触发
+  "condition is always false" 警告，故不改；
+- `LogFilterPanel.showByPopup` 用 `JCheckBox` 而非 `JCheckBoxMenuItem`：后者每次勾选都会**关闭菜单**，
+  与 TortoiseSVN「一次勾多个字段」的交互相悖；`JCheckBox` 自带文本，无障碍名称已由文本自动提供；
+- 错误弹窗标题（`title.enhance.merge`）与主对话框标题（`context.mergeTitle`）：前者是**插件级**提示
+  （让用户知道来源），后者对齐原版「Merge from <branch>」，语义不同，刻意不一致。
 
 ### 2026-10-18 官方规范合规整改（已完成）
 
@@ -299,6 +352,15 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   `verifyPlugin` / `verifyPluginConfiguration`（官方包结构与配置校验）均通过且**零告警**；
   单测 **53 个**（`EnhanceMergeBundleTest` 3 + `BundleKeysTest` 4 为新增）全过；
   （2026-10-19 因新增 R1+R2+R3——日期区间默认关闭 / 内存累计全集+就地重过滤 / 放宽扫描上限与渐进「全部显示」——以及 R4 日期区间模式下搜索无关内容（`loadFromDateRangeRaw` 缓冲拉完即置 `allLoaded` + 改 From/To 不重拉），重跑 `test`+`buildPlugin`+`verifyOnIde -PideaVersion=2022.1`+`runPluginVerifier`，55 单测全过、沙箱 PASS(0 issues)、IC-221/IC-262 两端仍 Compatible。）
+  （**2026-10-19 第二轮代码审查修复后重跑全套**：`test` **63 用例 0 失败**；`buildPlugin`
+  BUILD SUCCESSFUL；`verifyOnIde "-PideaVersion=2022.1" "-PverifyTimeout=600" "-PverifyAutoClose=true"`
+  → **PASS（0 issues，约 205s 就绪）**；`runPluginVerifier` 走 `-PverifierLocalIde` 双端本地 IDE
+  → **IC-221.5080.210 与 IC-262.10968.63 均 Compatible**（仍只有 `ActionToolbar.updateActionsImmediately`
+  与 `TableViewSpeedSearch` 单参构造两处 deprecated，不阻断）。）
+  （**2026-10-19 第三批（同轮剩余项）处理后再跑**：`test` **63 用例 0 失败**、`buildPlugin`
+  BUILD SUCCESSFUL（Kotlin 编译零告警）、`verifyOnIde "-PideaVersion=2022.1"` → **PASS（0 issues）**。
+  `runPluginVerifier` 本轮未重跑——改动全在插件自身代码内，未触碰 svn4idea API 调用面，
+  下次兼容性回归时一并跑。）
   `verify-plugin.sh`（Unix 版）本机无 bash **尚未实跑**，首次在 Linux/macOS 使用前请先人工执行一次确认。
 - **PowerShell 调用 gradlew 的坑**：`-PideaVersion=2022.1` 这类含点号的参数必须加引号
   （`"-PideaVersion=2022.1"`），否则会被 PowerShell 拆成 `-PideaVersion=2022` + `.1`，报 `Task '.1' not found`。

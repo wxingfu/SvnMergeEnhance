@@ -105,6 +105,8 @@ object MergeFlow {
             }
 
             override fun onSuccess() {
+                // 后台加载期间项目可能已被关闭：此时既不该弹提示，也不该再建对话框
+                if (context.project.isDisposed) return
                 if (items.isEmpty()) {
                     Messages.showInfoMessage(
                         context.project,
@@ -125,6 +127,9 @@ object MergeFlow {
             }
 
             override fun onThrowable(error: Throwable) {
+                // 同 onSuccess：项目已关闭时不再对已释放的 project 弹模态错误框
+                // （`Project` 被释放后再取 modality / 窗口父级会抛 AlreadyDisposedException）
+                if (context.project.isDisposed) return
                 Messages.showErrorDialog(
                     context.project,
                     EnhanceMergeBundle.message(

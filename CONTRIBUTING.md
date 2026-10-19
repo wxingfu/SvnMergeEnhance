@@ -18,7 +18,7 @@
 
 ```bash
 ./gradlew buildPlugin          # 产出 build/distributions/SvnMergeEnhance-<version>.zip
-./gradlew test                 # 46 个纯逻辑单测，不连仓库
+./gradlew test                 # 63 个纯逻辑单测，不连仓库
 ./gradlew verifyPlugin         # 官方包结构校验
 ./gradlew runPluginVerifier    # 官方 API 兼容性校验（会下载 IDE，较慢）
 ./gradlew verifyOnIde -PideaVersion=2022.1    # 启沙箱 + 扫插件异常日志

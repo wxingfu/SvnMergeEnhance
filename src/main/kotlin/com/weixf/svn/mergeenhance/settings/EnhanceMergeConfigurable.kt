@@ -72,22 +72,30 @@ class EnhanceMergeConfigurable : Configurable {
     override fun isModified(): Boolean {
         val spinner = pageSizeSpinner ?: return false
         val merge = mergeStatusCheckBox ?: return false
-        val bugId = bugIdField ?: return false
+        // 输入框本身只做非空校验，取值统一走 normalizedBugIdPattern()（已对 null 安全）
+        if (bugIdField == null) return false
         val dateRange = dateRangeSpinner ?: return false
         return spinner.value != settings.pageSize ||
             merge.isSelected != settings.computeMergeStatus ||
-            bugId.text != settings.bugIdPattern ||
+            normalizedBugIdPattern() != settings.bugIdPattern ||
             dateRange.value != settings.defaultDateRangeDays
     }
 
     override fun apply() {
         (pageSizeSpinner?.value as? Int)?.let { settings.pageSize = it }
         mergeStatusCheckBox?.isSelected?.let { settings.computeMergeStatus = it }
-        // 正则允许为空串（等价于「不提取 Bug-ID」）；空白串回退默认值
-        val pattern = bugIdField?.text?.trim().orEmpty()
-        settings.bugIdPattern = pattern.ifEmpty { EnhanceMergeSettings.DEFAULT_BUG_ID_PATTERN }
+        settings.bugIdPattern = normalizedBugIdPattern()
         (dateRangeSpinner?.value as? Int)?.let { settings.defaultDateRangeDays = it }
     }
+
+    /**
+     * 输入框里的 Bug-ID 正则归一化：去首尾空白，空串回退默认值（等价于"不提取 Bug-ID"）。
+     *
+     * [isModified] 与 [apply] **必须共用这一套**归一化：此前前者比原始文本、后者写 trim 后文本，
+     * 输入尾部空格时会永远判定"已修改"（应用完再比对仍不等）。
+     */
+    private fun normalizedBugIdPattern(): String =
+        bugIdField?.text?.trim().orEmpty().ifEmpty { EnhanceMergeSettings.DEFAULT_BUG_ID_PATTERN }
 
     override fun reset() {
         pageSizeSpinner?.value = settings.pageSize
