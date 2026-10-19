@@ -67,6 +67,59 @@ class LogPageLoader(
     fun loadNextPage(filter: LogFilter, pageSize: Int): List<SvnChangeList> =
         if (filter.hasDateRange()) loadFromDateRange(filter, pageSize) else loadByCursor(filter, pageSize)
 
+    /**
+     * 取下一页**原始（未客户端过滤）**修订，供对话框在内存全集上自行过滤。
+     *
+     * 为什么需要：对话框要保留"已下载全集"并在改搜索词时即时重过滤（TortoiseSVN 式），
+     * 因此不能让加载器把文本/日期条件先过滤掉——否则上一轮没命中的修订在新词下就找不到了。
+     * 这里把"日期区间"仍交给服务端（模式 A 的 `fetchByDateRange` 按日期裁剪），但**不做文本过滤**，
+     * 模式 B 也只按"版本区间下界"这个硬边界截断，其余原始修订原样返回。
+     */
+    fun loadNextPageRaw(filter: LogFilter, pageSize: Int): List<SvnChangeList> =
+        if (filter.hasDateRange()) loadFromDateRangeRaw(filter, pageSize) else loadByCursorRaw(filter, pageSize)
+
+    // ------------------------------------------------------------ 模式 A（原始）
+    private fun loadFromDateRangeRaw(filter: LogFilter, pageSize: Int): List<SvnChangeList> {
+        if (!bufferReady) {
+            buffer = dateRangeSource?.invoke(filter) ?: fetchByDateRange(filter)
+            bufferReady = true
+            allLoaded = true
+        }
+        val page = buffer.drop(bufferPos).take(pageSize)
+        bufferPos += page.size
+        return page
+    }
+
+    // ------------------------------------------------------------ 模式 B（原始）
+    private fun loadByCursorRaw(filter: LogFilter, pageSize: Int): List<SvnChangeList> {
+        if (allLoaded) return emptyList()
+        val raw = ArrayList<SvnChangeList>()
+        var batches = 0
+        while (raw.size < pageSize && !allLoaded && batches < MAX_BATCHES) {
+            batches++
+            val result = cursorSource?.invoke(cursor, pageSize)
+                ?: MergeCalculatorTask.loadChangeLists(context, cursor, pageSize).let { it.first to it.second }
+            val page = result.first
+            if (page.isEmpty()) {
+                allLoaded = true
+                break
+            }
+            cursor = page.last().number
+            allLoaded = result.second && page.size < pageSize
+            val lowerBound = filter.revisionRange().first
+            var reachedLowerBound = false
+            for (item in page) {
+                if (lowerBound != null && item.number < lowerBound) {
+                    reachedLowerBound = true
+                    break
+                }
+                raw.add(item)
+            }
+            if (reachedLowerBound) allLoaded = true
+        }
+        return raw
+    }
+
     // ------------------------------------------------------------ 模式 A
 
     private fun loadFromDateRange(filter: LogFilter, pageSize: Int): List<SvnChangeList> {

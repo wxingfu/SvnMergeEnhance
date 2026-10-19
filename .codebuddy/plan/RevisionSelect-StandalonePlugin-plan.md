@@ -423,6 +423,24 @@ class LogPageLoader(private val ctx: MergeContext) {
 - `MAX_BATCHES` 保证最坏情况 ≈ 300 条日志的扫描量，不会因为"该分支没有匹配项"卡死。
 - 全部在 `Task.Backgroundable` 里跑（不阻塞 EDT），带 `ProgressIndicator` 可取消。
 
+#### 5.4.2 2026-10-19 修正（R1+R2+R3：搜索精准度与深历史可达性）
+
+实测暴露三类问题（含 `#` 的备注搜不到、大库啥也搜不到、改搜索词即清空重拉且丢深历史），根因与修复：
+
+1. **R1 日期区间默认开启 + 预填首屏窄窗口**：`dateRangeEnabled` 原默认 `true`，对话框打开时
+   `initDateRange` 把起止日历设成首屏日志的日期跨度，于是 `hasDateRange()` 恒真 → 走模式 A 只拉那一小段，
+   更早提交永不入可搜索集。修复：默认值改为 `false`，默认走模式 B 从 HEAD 往回扫全量；日期区间改为用户显式勾选才生效。
+2. **R2 改搜索词清空重拉**：原 `onFilterChanged` 每次 `model.setItems(emptyList())` 后从 HEAD 重拉第一页，
+   已下载版本被丢弃、无法累计深度。修复：对话框维护一份**内存中已下载原始全集** `loadedAll`，
+   过滤条件变化时**只对该全集即时重过滤**（零远端请求），仅当结果不足且 `loader.allLoaded == false` 时才向后扩充加载。
+3. **R3 扫描深度硬上限**：模式 B 受 `MAX_BATCHES=10` 截断。修复：搜索时通过
+   `LogPageLoader.loadNextPageRaw`（返回未文本过滤的原始修订）持续向后扫描，直至凑够 `SEARCH_MATCH_TARGET`(100)
+   条命中或 `loader` 到底或触达 `MAX_SEARCH_ROUNDS`(200) 安全上限；「加载更多 / 全部显示」同样在 `loadedAll` 全集上操作，
+   深历史可被命中且不静默丢弃。
+
+> 该修正仅在**单次对话框会话的内存**内运作，关掉对话框即释放，不落盘、不累积磁盘缓存（小笔记本零负担）。
+> 跨会话秒开所需的持久化日志缓存作为可选后续，默认关闭、带限容。
+
 ### 5.5 合并执行（复用原版执行链）
 
 ```kotlin
@@ -456,7 +474,7 @@ object MergeExecutor {
 | `bugIdPattern` | `[A-Z][A-Z0-9]+-\d+` | Bug-ID 过滤用的正则 |
 | `defaultDateRangeDays` | `0` | >0 时过滤栏默认填"最近 N 天" |
 | `filterFields` | 空（=全选） | 过滤栏上次勾选的字段（存字段 id 字符串，不是枚举名）；**2026-10-18 新增** |
-| `dateRangeEnabled` | `true` | 日期区间开关状态；**2026-10-18 新增** |
+| `dateRangeEnabled` | `false` | 日期区间开关状态（**默认关闭**，对齐 TortoiseSVN，避免静默窄窗口）；**2026-10-18 新增，2026-10-19 由 `true` 改为 `false`** |
 | `useRegex` | `false` | 正则开关；**2026-10-18 新增** |
 | `caseSensitive` | `false` | 大小写敏感开关；**2026-10-18 新增** |
 

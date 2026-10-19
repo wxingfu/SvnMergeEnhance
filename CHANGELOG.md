@@ -35,6 +35,13 @@
   `verifyPluginConfiguration` 零告警。
 
 ### 修复
+- **修订选择搜索「含 # 搜不到 / 大库啥也搜不到 / 改搜索词就清空重拉且丢深历史**：根因有三——
+  ① 日期区间被默认开启并预填成首屏窄窗口，模式 A（`svn log -r {date}:{date}`）只拉那一小段时间，更早的提交永不进入可搜索集；
+  ② 每次改搜索词都会清空已加载列表、从 HEAD 重拉第一页（`onFilterChanged` 里 `model.setItems(emptyList())`），已下载的旧版本被丢弃；
+  ③ 模式 B 的扫描深度受 `MAX_BATCHES=10`（约 1000 条）硬上限截断，HEAD 往前 1000 条之外的提交被静默丢弃。
+  修复：① `EnhanceMergeSettings.dateRangeEnabled` 默认 `true → false`（对齐 TortoiseSVN，日期区间改为用户显式勾选才生效），默认走模式 B 从 HEAD 往回扫全量；
+  ② `onFilterChanged` 不再清空重拉，改为对内存中已下载全集即时重过滤（零远端请求），仅当结果不足且未到底时才向后**扩充**加载；
+  ③ 新增 `LogPageLoader.loadNextPageRaw`（返回未文本过滤的原始修订）支撑"累计全集 + 就地重过滤"，搜索 /「加载更多」/「全部显示」均在该全集上操作，深历史可被命中且不再静默丢弃（`SEARCH_MATCH_TARGET` / `MAX_SEARCH_ROUNDS` 控制扩充上限）。
 - **点「Show All」后日期控件不更新**：对话框打开时起止日历取的是首屏范围，而加载走游标模式（过滤条件里没有日期）；
   点「全部显示」后列表覆盖整条历史、日历框却仍是那个窄区间，用户看到的信息自相矛盾，
   再点「重新整理」还会被它截回去。现在加载完成后自动把日历扩到已加载数据的实际范围（`LogFilterPanel.widenDateRangeTo`，只扩不收，不会拆掉手填的更宽区间）。

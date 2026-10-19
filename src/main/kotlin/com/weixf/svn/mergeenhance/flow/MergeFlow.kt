@@ -101,7 +101,7 @@ object MergeFlow {
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                items = loader.loadNextPage(LogFilter(), EnhanceMergeSettings.getInstance().pageSize)
+                items = loader.loadNextPageRaw(LogFilter(), EnhanceMergeSettings.getInstance().pageSize)
             }
 
             override fun onSuccess() {

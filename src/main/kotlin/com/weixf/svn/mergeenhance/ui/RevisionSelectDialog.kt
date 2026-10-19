@@ -153,6 +153,16 @@ class RevisionSelectDialog(
         ListTableModel<SvnChangeList>(FAKE_COLUMN).apply { setItems(initialItems) }
 
     /**
+     * 已下载的**原始**修订全集（未过滤），跨「加载更多 / 改过滤条件 / 搜索」保留。
+     *
+     * 为什么单独保留原始集：改搜索词时，之前下载过、上一轮没命中的修订在新词下可能命中，
+     * 因此过滤必须作用在"原始全集"上，而不是每改一次词就清空重拉（那样既慢又会丢失深历史）。
+     * 这正是 TortoiseSVN 的做法：过滤只作用于内存里已加载（=缓存）的全集，远端仅在"扩充"时被调用。
+     * 该集合只在：模式切换（日期↔游标，结果集来源不同必须重拉）或对话框重建时才清空。
+     */
+    private val loadedAll: MutableList<SvnChangeList> = initialItems.toMutableList()
+
+    /**
      * `lateinit` 的三个 UI 组件：它们在 `createCenterPanel()` 里才被创建，
      * 而 DialogWrapper 的构造流程要求字段先就绪；用 `::x.isInitialized` 兜住
      * "构造期/早期事件先于 UI 创建到达"的情况（例如 init 里的默认日期触发重查）。
@@ -379,7 +389,7 @@ class RevisionSelectDialog(
         return ActionManager.getInstance().createActionToolbar(TOOLBAR_PLACE, group, true)
     }
 
-    /** 「加载更多」：实时向仓库继续翻页（后台执行，可取消）。 */
+    /** 「加载更多」：继续向后翻页（后台执行，可取消），原始数据累积进 `loadedAll`。 */
     private fun loadMore(quantity: Int) {
         if (loadingMore || loader.allLoaded) return
         loadingMore = true
@@ -390,24 +400,22 @@ class RevisionSelectDialog(
             EnhanceMergeBundle.message("progress.loading.more"),
             true,
         ) {
-            private var added: List<SvnChangeList> = emptyList()
+            private val added = ArrayList<SvnChangeList>()
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                added = loader.loadNextPage(currentFilter, quantity)
+                added.addAll(loader.loadNextPageRaw(currentFilter, quantity))
             }
 
             override fun onSuccess() {
                 // 对话框可能已在后台加载期间被关闭（用户直接点了 Merge Selected）：
-                // 此时 model / revisionsList 已随窗口销毁，再 addRows + 重绘会抛异常。
+                // 此时 model / revisionsList 已随窗口销毁，再重绘会抛异常。
                 if (isDisposed || context.project.isDisposed) return
-                if (added.isNotEmpty()) {
-                    model.addRows(added)
-                    revisionsList.revalidate()
-                    revisionsList.repaint()
-                    refreshMergeStatus(added)
-                }
-                updateStatus()
+                val existing = loadedAll.map { it.number }.toSet()
+                added.forEach { if (it.number !in existing) loadedAll.add(it) }
+                applyFilterToModel()
+                refreshMergeStatus(added)
+                refreshList()
             }
 
             override fun onThrowable(error: Throwable) {
@@ -444,7 +452,7 @@ class RevisionSelectDialog(
         filterPanel.widenDateRangeTo(dates.minOrNull(), dates.maxOrNull())
     }
 
-    /** 「全部显示」：循环加载剩余全部修订（后台，可取消）。 */
+    /** 「全部显示」：循环加载剩余全部修订（后台，可取消），原始数据累积进 `loadedAll`。 */
     private fun loadAll() {
         if (loadingMore) return
         // 允许对「已判定到底」的游标再发一次确认请求，避免按钮点了没反应
@@ -457,7 +465,7 @@ class RevisionSelectDialog(
             EnhanceMergeBundle.message("progress.loading.all"),
             true,
         ) {
-            private var added = ArrayList<SvnChangeList>()
+            private val added = ArrayList<SvnChangeList>()
 
             override fun run(indicator: ProgressIndicator) {
                 // 总条数未知（取决于仓库有多少匹配项），因此用"不确定进度 + 已加载计数"，
@@ -470,7 +478,7 @@ class RevisionSelectDialog(
                         "progress.loading.all.count",
                         added.size.toString(),
                     )
-                    val page = loader.loadNextPage(currentFilter, settings.pageSize)
+                    val page = loader.loadNextPageRaw(currentFilter, settings.pageSize)
                     if (page.isEmpty()) break
                     added.addAll(page)
                 }
@@ -479,14 +487,12 @@ class RevisionSelectDialog(
             override fun onSuccess() {
                 // 同 loadMore：对话框已关闭时不得再写model / 重绘。
                 if (isDisposed || context.project.isDisposed) return
-                if (added.isNotEmpty()) {
-                    model.addRows(added)
-                    revisionsList.revalidate()
-                    revisionsList.repaint()
-                    refreshMergeStatus(added)
-                }
+                val existing = loadedAll.map { it.number }.toSet()
+                added.forEach { if (it.number !in existing) loadedAll.add(it) }
+                applyFilterToModel()
+                refreshMergeStatus(added)
                 syncDateRangeToLoaded()
-                updateStatus()
+                refreshList()
             }
 
             override fun onThrowable(error: Throwable) {
@@ -514,47 +520,103 @@ class RevisionSelectDialog(
     }
 
     /**
-     * 过滤条件变化（防抖后回调）：**重置游标、清空列表、从第一页重新查询**。
+     * 对内存中已下载的**原始全集**做客户端过滤并刷新表格（**不触发任何远端请求**）。
      *
-     * 为什么必须清空重查而不是"在已加载数据里过滤"：模式 B 的服务端分页是以
-     * 「从 HEAD 往后 N 条」为单位的，旧游标位置在新条件下没有意义；日期模式同理
-     * （服务端按日期裁剪后的集合完全不同）。只有重查才能保证"结果集 = 满足新条件的全集"。
+     * 对应 TortoiseSVN 的对内存缓存重过滤：改搜索词即时、免费；远端仅在"扩充"时被调用。
+     */
+    private fun applyFilterToModel() {
+        val filtered = if (currentFilter.isFiltering()) {
+            loadedAll.filter { currentFilter.matchesClientSide(it) }
+        } else {
+            loadedAll.toList()
+        }
+        model.setItems(filtered.toMutableList())
+    }
+
+    /**
+     * 过滤条件变化（防抖后回调）。
      *
-     * 勾选状态**不清空**：`QuantitySelection` 按修订号保存，与展示列表解耦，
-     * 重查后同一修订号仍在集合里（原版同特性）。
+     * 与旧实现的关键区别（修复"改词就清空重拉 / 静默窄窗口 / 深历史丢失"）：
+     * 1. **不清空已下载全集**，先对内存里 `loadedAll` 即时重过滤（免费、无远端请求）；
+     * 2. 仅当"结果不足且还有更多"时才向后**扩充**加载，而不是从 HEAD 重拉；
+     * 3. 日期区间不再默认生效（见 [EnhanceMergeSettings.dateRangeEnabled] 默认 false），
+     *    默认走模式 B 从 HEAD 往回扫全量，深历史可被命中。
+     *
+     * 仅当"日期↔游标模式切换"时，结果集来源不同，才清空 `loadedAll` 并重拉。
      */
     private fun onFilterChanged() {
         val filter = filterPanel.buildFilter()
+        val modeChanged = currentFilter.hasDateRange() != filter.hasDateRange()
         currentFilter = filter
         val token = ++reloadToken
 
-        loader.reset(filter)
-        // 必须传**可变**列表：ListTableModel 内部持有该引用，后续 addRows 会调 addAll，
-        // 传 emptyList() 会抛 UnsupportedOperationException（read-only collection）
-        model.setItems(mutableListOf())
-        // 旧状态对新查询无意义（修订号可能已不在结果集里），必须清掉，
-        // 否则 renderer 会显示上一轮残留的"已合并/刷新中"图标
-        mergeStatusMap.clear()
-        loadingMore = true
-        updateStatus()
-        refreshToolbar()
+        if (modeChanged) {
+            // 模式切换：已加载全集的来源失效，必须重拉
+            loadedAll.clear()
+            loader.reset(filter)
+            mergeStatusMap.clear()
+            model.setItems(mutableListOf())
+        }
 
+        // 第 1 步：立即对内存全集做客户端过滤（不触发远端请求）
+        applyFilterToModel()
+        updateStatus()
+
+        val needFetch = when {
+            loadedAll.isEmpty() -> true                       // 还没有任何数据 → 拉首屏
+            !filter.isFiltering() -> false                    // 无搜索词 → 已显示全部已加载
+            loader.allLoaded -> false                         // 已全部加载 → 内存过滤即最全集
+            model.rowCount < SEARCH_MATCH_TARGET -> true      // 结果不足且还有更多 → 向后扩充
+            else -> false
+        }
+
+        if (!needFetch) {
+            loadingMore = false
+            refreshToolbar()
+            return
+        }
+
+        loadingMore = true
+        refreshToolbar()
+        runExtendSearch(token, filter)
+    }
+
+    /**
+     * 后台向后扩充已下载全集，直到凑够 [SEARCH_MATCH_TARGET] 条命中或 [loader] 到底或触达
+     * [MAX_SEARCH_ROUNDS] 安全上限。结果集累积进 `loadedAll` 并即时重过滤。
+     */
+    private fun runExtendSearch(token: Int, filter: LogFilter) {
+        val pageSize = settings.pageSize
         ProgressManager.getInstance().run(object : Task.Backgroundable(
             context.project,
             EnhanceMergeBundle.message("progress.loading.revisions"),
             true,
         ) {
-            private var loaded: List<SvnChangeList> = emptyList()
+            private val collected = ArrayList<SvnChangeList>()
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                loaded = loader.loadNextPage(filter, settings.pageSize)
+                var rounds = 0
+                while (!loader.allLoaded && rounds++ < MAX_SEARCH_ROUNDS) {
+                    indicator.checkCanceled()
+                    val raw = loader.loadNextPageRaw(filter, pageSize)
+                    if (raw.isEmpty()) break
+                    collected.addAll(raw)
+                    val matched = collected.count { filter.matchesClientSide(it) }
+                    if (matched >= SEARCH_MATCH_TARGET) break
+                    indicator.text2 = EnhanceMergeBundle.message(
+                        "progress.loading.all.count",
+                        collected.size.toString(),
+                    )
+                }
             }
 
             override fun onSuccess() {
                 if (token != reloadToken || isDisposed || context.project.isDisposed) return
-                if (loaded.isNotEmpty()) model.addRows(loaded)
-                refreshMergeStatus(loaded)
+                val existing = loadedAll.map { it.number }.toSet()
+                collected.forEach { if (it.number !in existing) loadedAll.add(it) }
+                applyFilterToModel()
+                refreshMergeStatus(collected)
                 refreshList()
             }
 
@@ -943,6 +1005,18 @@ class RevisionSelectDialog(
          * 只有"平台判定到底"失灵时才会撞到这个数。
          */
         const val MAX_LOAD_ALL_ROUNDS = 100
+
+        /**
+         * 搜索时凑够多少条命中即停止向后扩充（避免对常见词也一路扫到 r1）。
+         * 命中更多可点「全部显示」继续。
+         */
+        const val SEARCH_MATCH_TARGET = 100
+
+        /**
+         * 单次搜索最多向后扫描多少批原始日志，防止平台"是否到底"判定失灵时无限扫描。
+         * 每批至多 `LogPageLoader.MAX_BATCHES * pageSize` 条原始数据。
+         */
+        const val MAX_SEARCH_ROUNDS = 200
 
         /**
          * 「+N」两个动作的每次追加条数（对齐原版 `ToBeMergedDialog.MoreXAction`）。

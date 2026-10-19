@@ -18,7 +18,7 @@ import java.util.Date
  * | [DATE]    | `LOGFILTER_DATE`     | 日期文本（与搜索词做子串匹配，区别于 [dateRangeEnabled]）|
  *
  * 注：[DATE] 是「文本匹配日期字符串」；而「日期区间」由独立的 [dateRangeEnabled] + [fromDate]/[toDate] 控制，
- * 对应 TortoiseSVN 的 `LOGFILTER_DATERANGE`（默认开启，勾选时才显示起止日历）。
+ * 对应 TortoiseSVN 的 `LOGFILTER_DATERANGE`（默认**关闭**，用户勾选后才显示起止日历并收缩结果集）。
  */
 enum class LogFilterField(val id: String) {
     MESSAGE("message"),
@@ -55,13 +55,13 @@ data class LogFilter(
     val searchText: String = "",
     val fields: Set<LogFilterField> = LogFilterField.values().toSet(),
     /**
-     * 对应 `LOGFILTER_DATERANGE`：开启时显示并使用起止日历（默认开）。
+     * 对应 `LOGFILTER_DATERANGE`：开启时显示并使用起止日历。
      *
-     * 默认 true 的原因：TortoiseSVN 的日期范围开关默认就是勾选态，且面板上日历默认可见；
-     * 关掉后 `fromDate`/`toDate` 即使有值也不参与匹配（`hasDateRange()` 返回 false），
-     * 模式 A 也不会触发——即"用户主动关掉日期维度"。
+     * 默认 **false**（关闭）：对齐 TortoiseSVN 的"日期范围默认不收缩结果集"行为——
+     * 不勾选时 `fromDate`/`toDate` 即使有值也不参与匹配（`hasDateRange()` 返回 false），
+     * 加载走模式 B（从 HEAD 往回扫全量），搜索才能命中深历史；用户主动勾选后才启用日期维度。
      */
-    val dateRangeEnabled: Boolean = true,
+    val dateRangeEnabled: Boolean = false,
     val fromDate: Date? = null,
     val toDate: Date? = null,
     val useRegex: Boolean = false,

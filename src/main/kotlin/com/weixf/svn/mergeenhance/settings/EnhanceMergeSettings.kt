@@ -34,7 +34,7 @@ class EnhanceMergeSettings : PersistentStateComponent<EnhanceMergeSettings.State
         // ---- 过滤栏「上次使用」的界面状态（关闭对话框后重开仍沿用）----
         /** 勾选的过滤字段（存 [com.weixf.svn.mergeenhance.log.LogFilterField.id]）；为空表示用默认全选。 */
         var filterFields: MutableList<String> = mutableListOf(),
-        var dateRangeEnabled: Boolean = true,
+        var dateRangeEnabled: Boolean = false,
         var useRegex: Boolean = false,
         var caseSensitive: Boolean = false,
     )
