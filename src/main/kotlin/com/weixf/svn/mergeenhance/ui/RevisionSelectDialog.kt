@@ -542,16 +542,22 @@ class RevisionSelectDialog(
      * 3. 日期区间不再默认生效（见 [EnhanceMergeSettings.dateRangeEnabled] 默认 false），
      *    默认走模式 B 从 HEAD 往回扫全量，深历史可被命中。
      *
-     * 仅当"日期↔游标模式切换"时，结果集来源不同，才清空 `loadedAll` 并重拉。
+     * 仅当"日期↔游标模式切换"或"日期区间值变化"（模式 A 的服务端缓冲按区间整段拉取，
+     * 旧缓冲对新区间失效）时，才清空 `loadedAll` 并重拉。
      */
     private fun onFilterChanged() {
         val filter = filterPanel.buildFilter()
         val modeChanged = currentFilter.hasDateRange() != filter.hasDateRange()
+        // 日期"区间值"变化（模式 A 内改 From/To）：模式 A 的服务端缓冲是按"那一个区间"
+        // 一次拉完的，旧缓冲对新区间已失效，必须整体重拉——否则界面停留在旧区间的数据上，
+        // 新日期范围被静默忽略（用户表现为"加了日期范围后搜出来的都是无关内容"）。
+        val dateRangeChanged = !modeChanged && filter.hasDateRange() &&
+            (currentFilter.fromDate != filter.fromDate || currentFilter.toDate != filter.toDate)
         currentFilter = filter
         val token = ++reloadToken
 
-        if (modeChanged) {
-            // 模式切换：已加载全集的来源失效，必须重拉
+        if (modeChanged || dateRangeChanged) {
+            // 模式切换 / 日期区间变化：已加载全集的来源失效，必须重拉
             loadedAll.clear()
             loader.reset(filter)
             mergeStatusMap.clear()
@@ -597,7 +603,10 @@ class RevisionSelectDialog(
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
                 var rounds = 0
-                while (!loader.allLoaded && rounds++ < MAX_SEARCH_ROUNDS) {
+                // 以「原始页为空」作为统一的到底信号（模式 A：缓冲分页完；模式 B：allLoaded）。
+                // 不能用 !loader.allLoaded 作循环条件——模式 A 曾在整段拉完时立即置 allLoaded，
+                // 会让扩充循环一轮即停，搜索永远只覆盖日期区间的前 pageSize 条原始数据。
+                while (rounds++ < MAX_SEARCH_ROUNDS) {
                     indicator.checkCanceled()
                     val raw = loader.loadNextPageRaw(filter, pageSize)
                     if (raw.isEmpty()) break

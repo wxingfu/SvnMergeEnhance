@@ -441,6 +441,22 @@ class LogPageLoader(private val ctx: MergeContext) {
 > 该修正仅在**单次对话框会话的内存**内运作，关掉对话框即释放，不落盘、不累积磁盘缓存（小笔记本零负担）。
 > 跨会话秒开所需的持久化日志缓存作为可选后续，默认关闭、带限容。
 
+#### 5.4.3 2026-10-19 修正（R4：日期区间模式下搜索出现无关内容）
+
+实测（勾选日期区间后再搜索）暴露模式 A 两处缺陷，根因与修复：
+
+1. **`loadFromDateRangeRaw` 缓冲拉完即置 `allLoaded=true`**：`svn log -r {date}:{date}` 整段一次性拉回后，
+   对话框误判"再无数据"——搜索扩充循环 `while(!loader.allLoaded …)` 一轮即停（只覆盖区间**前 100 条**原始数据）、
+   `+100/+500` 按钮因 `isVisible = !loader.allLoaded` 被隐藏。修复：`allLoaded` 在模式 A 改为"缓冲分页到底"
+   （`bufferPos >= buffer.size`）才算取完，搜索扩充 / `+N` / 全部显示恢复对整段区间的覆盖。
+2. **改 From/To 区间值不重拉**：`onFilterChanged` 只在"日期开关翻转"时清空重拉，区间**值**变化不触发，
+   旧区间缓冲被继续复用、新日期范围被静默忽略，界面停留在旧数据上 → 表现为"搜出来的都是无关内容"。
+   修复：`onFilterChanged` 新增 `dateRangeChanged` 判定（模式 A 内 From/To 变化也清空重拉，防抖后一次服务端查询）；
+   搜索扩充循环改用「原始页为空」作统一到底信号，不再被模式 A 的 `allLoaded` 提前截断。
+
+> 验证：`LogPageLoaderTest` 新增 2 个回归用例（模式 A 原始分页 `allLoaded` 语义、区间值变化后按新区间重拉）；
+> `test` / `buildPlugin` / `verifyOnIde -PideaVersion=2022.1` 全通过（沙箱 PASS，issues 0）。
+
 ### 5.5 合并执行（复用原版执行链）
 
 ```kotlin

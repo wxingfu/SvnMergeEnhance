@@ -83,10 +83,14 @@ class LogPageLoader(
         if (!bufferReady) {
             buffer = dateRangeSource?.invoke(filter) ?: fetchByDateRange(filter)
             bufferReady = true
-            allLoaded = true
         }
         val page = buffer.drop(bufferPos).take(pageSize)
         bufferPos += page.size
+        // ⚠️ 不能在"整段拉完"时就置 allLoaded=true：那会让对话框以为再无数据——
+        // 搜索扩充循环一轮即停、「+N」按钮被隐藏，日期区间内第 2 页之后的原始数据
+        // 永远进不了内存全集（表现为"加了日期范围后搜索只覆盖开头一屏、其余命中丢失"）。
+        // allLoaded 的语义是"再也取不出数据"，对模式 A 即"缓冲区已分页到底"。
+        allLoaded = bufferPos >= buffer.size
         return page
     }
 

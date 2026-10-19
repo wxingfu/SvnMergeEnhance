@@ -236,4 +236,54 @@ class LogPageLoaderTest {
         assertEquals(2, second.size)
         assertTrue(loader.allLoaded)
     }
+
+    @Test
+    fun `date mode raw paging marks allLoaded only after the buffer is exhausted`() {
+        var fetches = 0
+        val all = (1..25).map { list(it.toLong()) }
+        val loader = LogPageLoader(context, dateRangeSource = { fetches++; all })
+        val filter = LogFilter(dateRangeEnabled = true, fromDate = Date(0), toDate = farFuture)
+
+        // 第一页：缓冲已整段拉到，但还没分页到底 —— 不能算 allLoaded，
+        // 否则对话框的搜索扩充/+N 会提前停（曾导致日期区间内搜索只覆盖前 100 条）
+        val p1 = loader.loadNextPageRaw(filter, 10)
+        assertEquals(10, p1.size)
+        assertEquals(1, fetches)
+        assertFalse(loader.allLoaded)
+
+        assertEquals(10, loader.loadNextPageRaw(filter, 10).size)
+        assertFalse(loader.allLoaded)
+
+        val p3 = loader.loadNextPageRaw(filter, 10)
+        assertEquals(5, p3.size)
+        assertTrue(loader.allLoaded) // 缓冲分页到底
+
+        assertTrue(loader.loadNextPageRaw(filter, 10).isEmpty())
+        assertTrue(loader.allLoaded)
+        assertEquals(1, fetches) // 到底后不再发远端请求
+    }
+
+    @Test
+    fun `date mode raw refetches when the date range value changes`() {
+        val narrow = (1..5).map { list(it.toLong()) }
+        val wide = (1..30).map { list(it.toLong()) }
+        val fetchedRanges = mutableListOf<Date?>()
+        val loader = LogPageLoader(
+            context,
+            dateRangeSource = { f ->
+                fetchedRanges.add(f.fromDate)
+                if (f.fromDate == Date(0)) narrow else wide
+            },
+        )
+        val narrowFilter = LogFilter(dateRangeEnabled = true, fromDate = Date(0), toDate = farFuture)
+        assertEquals(5, loader.loadNextPageRaw(narrowFilter, 10).size)
+        assertTrue(loader.allLoaded)
+
+        // 区间值变化（开关联动已由调用方 reset 表达）：reset 后必须用新区间重新拉取
+        loader.reset(LogFilter(dateRangeEnabled = true, fromDate = Date(1000), toDate = farFuture))
+        val wideFilter = LogFilter(dateRangeEnabled = true, fromDate = Date(1000), toDate = farFuture)
+        val page = loader.loadNextPageRaw(wideFilter, 10)
+        assertEquals(10, page.size)
+        assertEquals(Date(1000), fetchedRanges.last())
+    }
 }

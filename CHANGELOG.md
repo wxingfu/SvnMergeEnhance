@@ -42,6 +42,12 @@
   修复：① `EnhanceMergeSettings.dateRangeEnabled` 默认 `true → false`（对齐 TortoiseSVN，日期区间改为用户显式勾选才生效），默认走模式 B 从 HEAD 往回扫全量；
   ② `onFilterChanged` 不再清空重拉，改为对内存中已下载全集即时重过滤（零远端请求），仅当结果不足且未到底时才向后**扩充**加载；
   ③ 新增 `LogPageLoader.loadNextPageRaw`（返回未文本过滤的原始修订）支撑"累计全集 + 就地重过滤"，搜索 /「加载更多」/「全部显示」均在该全集上操作，深历史可被命中且不再静默丢弃（`SEARCH_MATCH_TARGET` / `MAX_SEARCH_ROUNDS` 控制扩充上限）。
+- **日期区间模式下搜索出现与搜索目标无关的内容（且 `+100/+500` 按钮消失、改日期区间值不重拉）**：根因在模式 A（`svn log -r {date}:{date}` 整段拉完缓冲）的两处缺陷——
+  ① `LogPageLoader.loadFromDateRangeRaw` 在缓冲拉完时立即置 `allLoaded=true`，导致对话框误判"再无数据"：搜索扩充循环 `while(!loader.allLoaded …)` 一轮即停（只覆盖日期区间**前 100 条**原始数据）、`+100/+500` 按钮因 `isVisible = !loader.allLoaded` 被隐藏；
+  ② `onFilterChanged` 只在"日期开关翻转"时清空重拉，**改 From/To 区间值不重拉**，旧区间缓冲被继续复用、新日期范围被静默忽略，界面停留在旧数据上，表现为"加了日期范围后搜出来的都是无关内容"。
+  修复：① `allLoaded` 在模式 A 改为"缓冲分页到底"才算取完（`bufferPos >= buffer.size`），搜索扩充、`+N`、全部显示在该模式下恢复对整段区间的覆盖；
+  ② `onFilterChanged` 新增 `dateRangeChanged` 判定（模式 A 内 From/To 变化也清空重拉，防抖后一次服务端查询）；
+  ③ 搜索扩充循环改用「原始页为空」作统一到底信号，不再被模式 A 的 `allLoaded` 提前截断。
 - **点「Show All」后日期控件不更新**：对话框打开时起止日历取的是首屏范围，而加载走游标模式（过滤条件里没有日期）；
   点「全部显示」后列表覆盖整条历史、日历框却仍是那个窄区间，用户看到的信息自相矛盾，
   再点「重新整理」还会被它截回去。现在加载完成后自动把日历扩到已加载数据的实际范围（`LogFilterPanel.widenDateRangeTo`，只扩不收，不会拆掉手填的更宽区间）。

@@ -198,7 +198,7 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 
 ## 实现状态与文档
 
-**v2 已全部实现并通过官方校验**（2026-10-18）。2026-10-19 在 v2 之上修复 R1+R2+R3（修订选择搜索精准度与深历史可达性），重跑 `test`/`buildPlugin`/`verifyOnIde`/`runPluginVerifier` 全通过。v1 的 `BranchSelectionDialog`、`MergeMethodSelectionDialog`、
+**v2 已全部实现并通过官方校验**（2026-10-18）。2026-10-19 在 v2 之上修复 R1~R4（R1+R2+R3 修订选择搜索精准度与深历史可达性；R4 日期区间模式下搜索出现无关内容、`+N` 按钮消失、改区间值不重拉），重跑 `test`/`buildPlugin`/`verifyOnIde`/`runPluginVerifier` 全通过。v1 的 `BranchSelectionDialog`、`MergeMethodSelectionDialog`、
 `RevisionLogDataSource`、`RevisionItem`、`SvnRevisionMergeExecutor`、`WcInfoPanelLinkInjector` 均已删除。
 
 实际类清单：
@@ -298,7 +298,7 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   （仅 2 处 deprecated：`ActionToolbar.updateActionsImmediately`、`TableViewSpeedSearch` 单参构造，都仍可用不阻断），报告在 `build/reports/pluginVerifier/`；
   `verifyPlugin` / `verifyPluginConfiguration`（官方包结构与配置校验）均通过且**零告警**；
   单测 **53 个**（`EnhanceMergeBundleTest` 3 + `BundleKeysTest` 4 为新增）全过；
-  （2026-10-19 因新增 R1+R2+R3——日期区间默认关闭 / 内存累计全集+就地重过滤 / 放宽扫描上限与渐进「全部显示」——重跑 `test`+`buildPlugin`+`verifyOnIde -PideaVersion=2022.1`+`runPluginVerifier`，53 单测全过、沙箱 PASS(0 issues)、IC-221/IC-262 两端仍 Compatible。）
+  （2026-10-19 因新增 R1+R2+R3——日期区间默认关闭 / 内存累计全集+就地重过滤 / 放宽扫描上限与渐进「全部显示」——以及 R4 日期区间模式下搜索无关内容（`loadFromDateRangeRaw` 缓冲拉完即置 `allLoaded` + 改 From/To 不重拉），重跑 `test`+`buildPlugin`+`verifyOnIde -PideaVersion=2022.1`+`runPluginVerifier`，55 单测全过、沙箱 PASS(0 issues)、IC-221/IC-262 两端仍 Compatible。）
   `verify-plugin.sh`（Unix 版）本机无 bash **尚未实跑**，首次在 Linux/macOS 使用前请先人工执行一次确认。
 - **PowerShell 调用 gradlew 的坑**：`-PideaVersion=2022.1` 这类含点号的参数必须加引号
   （`"-PideaVersion=2022.1"`），否则会被 PowerShell 拆成 `-PideaVersion=2022` + `.1`，报 `Task '.1' not found`。
