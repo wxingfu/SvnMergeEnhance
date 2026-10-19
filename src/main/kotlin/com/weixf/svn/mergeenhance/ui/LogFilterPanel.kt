@@ -408,6 +408,31 @@ class LogFilterPanel(
         suppressEvents = false
     }
 
+    /**
+     * 把起止日历**向外扩**到已加载数据的实际范围（只扩不收，且不触发重查）。
+     *
+     * 用于「全部显示」之后：打开对话框时起止日历取的是**首屏**范围（见 RevisionSelectDialog
+     * 的 init），而加载走的是游标模式（过滤条件里没有日期），点「全部显示」后列表会覆盖
+     * 整条历史——此时日期控件仍显示首屏那个窄区间，与列表内容不符；用户随后点「重新整理」
+     * 还会被这个陈旧区间把数据截回去。
+     *
+     * 只扩不收：用户手填的区间可能比数据更宽（例如刻意留了空档），不能因为「数据没覆盖到」
+     * 就把他的手填值改窄。内部走 suppressEvents，因此不会立刻触发一次重查。
+     */
+    fun widenDateRangeTo(min: Date?, max: Date?) {
+        if (min == null || max == null) return
+        val currentFrom = toDate(fromPicker, false) ?: min
+        val currentTo = toDate(toPicker, true) ?: max
+        val newFrom = minOf(currentFrom, min)
+        val newTo = maxOf(currentTo, max)
+        // dateBounds（reset() 的回退目标）同步取并集，保证「重置过滤」回到最宽的已知范围
+        dateBounds = (dateBounds.first?.let { minOf(it, newFrom) } ?: newFrom) to
+            (dateBounds.second?.let { maxOf(it, newTo) } ?: newTo)
+        suppressEvents = true
+        setPickers(newFrom, newTo)
+        suppressEvents = false
+    }
+
     /** 清空搜索文本并重置日期区间为当前页范围（保留 By 选择与大小写/正则开关）。 */
     fun reset() {
         suppressEvents = true

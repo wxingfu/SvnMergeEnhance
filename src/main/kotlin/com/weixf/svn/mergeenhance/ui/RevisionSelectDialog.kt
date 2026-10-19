@@ -431,6 +431,19 @@ class RevisionSelectDialog(
         })
     }
 
+    /**
+     * 「全部显示」后把起止日历同步到**已加载数据的实际范围**。
+     *
+     * 为什么需要：对话框打开时起止日历取的是**首屏**范围，而加载走游标模式
+     *（过滤条件里没有日期）——点「全部显示」后列表覆盖整条历史，但日期控件仍是那个窄区间，
+     * 用户看到的信息自相矛盾（列表里有几年前的提交，日历框却写着今年），且再点「重新整理」会被它截回去。
+     * 详见 LogFilterPanel.widenDateRangeTo（只扩不收，不会拆掉用户手填的更宽区间）。
+     */
+    private fun syncDateRangeToLoaded() {
+        val dates = model.items.mapNotNull { it.commitDate }
+        filterPanel.widenDateRangeTo(dates.minOrNull(), dates.maxOrNull())
+    }
+
     /** 「全部显示」：循环加载剩余全部修订（后台，可取消）。 */
     private fun loadAll() {
         if (loadingMore) return
@@ -472,6 +485,7 @@ class RevisionSelectDialog(
                     revisionsList.repaint()
                     refreshMergeStatus(added)
                 }
+                syncDateRangeToLoaded()
                 updateStatus()
             }
 

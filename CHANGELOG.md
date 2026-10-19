@@ -35,6 +35,9 @@
   `verifyPluginConfiguration` 零告警。
 
 ### 修复
+- **点「Show All」后日期控件不更新**：对话框打开时起止日历取的是首屏范围，而加载走游标模式（过滤条件里没有日期）；
+  点「全部显示」后列表覆盖整条历史、日历框却仍是那个窄区间，用户看到的信息自相矛盾，
+  再点「重新整理」还会被它截回去。现在加载完成后自动把日历扩到已加载数据的实际范围（`LogFilterPanel.widenDateRangeTo`，只扩不收，不会拆掉手填的更宽区间）。
 - **CI：Plugin Verifier 下载上限 IDE 失败**：IDEA 2026 起 Community 与 Ultimate 合并为统一发行版，
   JetBrains 下载接口已无独立的 `ideaIC-2026.x` 条目（`code=IC` 返回 404），
   verifier 的 `ideVersions` 上限改用 `IU-2026.2.3`（`IU`/`IIU` 均指向统一发行版）。
