@@ -28,7 +28,10 @@ alwaysApply: false
 ## 构建与环境（不可偏离）
 
 - Gradle 运行 JDK：`org.gradle.java.home=D:/softwares/Java/jdk-11.0.32.1`（JDK 8 无法构建 since-2022 插件）。
-- Kotlin/Java 目标字节码 **11**（同时覆盖 2022.1/2.2 的 JBR11 与 2022.3+ 的 JBR17）。
+  **也可换成 JDK 17**（实测 `D:/softwares/Java/jdk-17.0.2` 构建成功且产物不变）——
+  详见下方「JDK / 字节码 / Kotlin 版本兼容性基线」。
+- Kotlin/Java 目标字节码 **11**（同时覆盖 2022.1/2022.2 的 JBR 11 与 2022.3+ 的 JBR 17/21/25）。
+  ⚠️ 这是**硬约束**：实测改成 17 后 2022.1 直接 `UnsupportedClassVersionError`，插件入口不可用。
 - `GRADLE_USER_HOME=G:\GradleRepository`；ideaIC 解压目录固定 `intellij.ideaDependencyCachePath=G:/GradleRepository/idea`。
 - 构建/验证命令：- **仓库列表与 CI：阿里云镜像仅本机启用**：`build.gradle.kts` 根据 `CI` 环境变量判断。
   镜像是给国内网络加速的，GitHub runner 在境外访问会失败（实测对 `verifier-cli:1.410`
@@ -67,7 +70,79 @@ alwaysApply: false
    （属性已存在就打 warn，与值是否变化无关，见 `PatchPluginXmlTask.patchAttribute`）。plugin.xml 的
    `<idea-version since-build="221"/>` 按规则保留，故此消息会一直在，属信息性噪音。
 
-### verifyOnIde 超时陷阱（2026-10-18 实测）
+### JDK / 字节码 / Kotlin 版本兼容性基线（2026-10-20 实测，勿重复调研）
+
+调研问题："把插件升级到 JDK 17，还能兼容 IDEA 2022–2026 吗？" —— **取决于升级的是哪一层**。
+
+### 1. 运行时（JBR）矩阵
+
+| IDE | build | 运行时 | 依据 |
+|---|---|---|---|
+| 2022.1（当前下限） | `IC-221.5080.210` | **JBR 11.0.14.1** | 沙箱 `idea.log`：`JRE: 11.0.14.1+1-b2043.25 (JetBrains s.r.o.)` |
+| 2026.2.3（当前上限） | `IC-262.10968.63` | **JBR 21/25 量级** | Gradle 缓存已解析 `com.jetbrains/jbre/jbr-25.0.4-windows-x64-b508.27`；2026.2.3 未跑过 `runIde`，该值属"已解析"而非"已实跑" |
+
+JVM **向下兼容**类文件：Java 11 字节码（major 55）在更高版本 JBR 上照常加载；反过来**不成立**。
+
+### 2. 硬约束：产物字节码必须是 11（major 55）
+
+实测（2026-10-20）：临时把 `kotlinOptions.jvmTarget` 设为 `17` → 产物 `major version: 61` →
+2022.1 沙箱加载即失败，且**不是告警，是插件入口直接废掉**：
+
+```
+Caused by: java.lang.UnsupportedClassVersionError:
+  com/weixf/svn/mergeenhance/wcinfo/WcInfoLinkInjector has been compiled by a more recent
+  version of the Java Runtime (class file version 61.0), this version of the Java Runtime
+  only recognizes class file versions up to 55.0
+
+com.intellij.diagnostic.PluginException: Cannot create extension
+  (class=com.weixf.svn.mergeenhance.wcinfo.WcInfoLinkInjector) [Plugin: com.weixf.svn.mergeenhance]
+```
+
+- 故 **`jvmTarget=11` 与 `since-build=221` 是绑定的硬约束**；
+- 若要把字节码 / 语言级别升到 17，必须同时把 `since-build` 由 **221 抬到 223**
+  （IDEA 2022.3 起才是 JBR 17），即**放弃 2022.1 / 2022.2 用户**；上限（262.*）不受影响。
+  **该取舍待用户决策，未实施。**
+- 产物版本自检（改了构建脚本必跑）：
+  `javap -verbose -cp build/classes/kotlin/main com.weixf.svn.mergeenhance.flow.MergeFlow | grep "major version"`
+  → 必须是 **55**。
+
+### 3. 构建**工具链**可以升到 JDK 17（推荐，兼容性零影响）
+
+```bash
+gradlew clean buildPlugin "-Dorg.gradle.java.home=D:/softwares/Java/jdk-17.0.2"
+# 实测 BUILD SUCCESSFUL；产物 major version 仍为 55
+```
+
+- `kotlin { jvmToolchain(11) }` **保持不变**（Gradle 自行解析 JDK 11 工具链）；
+- 收益：消除 `Executing Gradle on JVM versions 16 and lower has been deprecated` 告警，
+  并为 Gradle 9（要求 daemon JDK 17+）铺路；
+- ⚠️ **JDK API 可见性无需额外操心**：`jvmTarget=11` 时 KGP 已把可引用的 JDK API 锁在 11，
+  实测在 JDK 17 工具链下写 `java.util.HexFormat`（JDK 17 API）编译即报
+  `Unresolved reference: HexFormat` —— 不会静默放行、更不会到 2022.1 上才炸。
+  唯一例外：将来若新增 **Java** 源码，需显式设 `options.release = 11`。
+
+### 4. Kotlin 版本链路
+
+- 2022.1 内置 kotlinc：`plugins/Kotlin/kotlinc/build.txt` = **1.6.20-release-285**（实测）；
+  运行时 stdlib 由 `lib/3rd-party-rt.jar` 提供（2022.1 无独立 `kotlin-stdlib.jar`），
+  本插件不打包 stdlib（`kotlin.stdlib.default.dependency=false`）。
+- 现用 **Kotlin 1.7.22** 已实测沙箱 PASS，**勿随意升**：
+  - `1.9.x`：`jvmTarget=11` 仍支持，但产物可能引用 1.6/1.7 stdlib 里没有的 API，须重跑沙箱才算数；
+  - `2.x`：能解决"2026.x 无法做编译期回归"（2026.2.3 平台 jar 是 Kotlin 2.4 元数据，1.7.22 读不了），
+    但必须配套 **IPGP 2.x**，且对 2022.1 的 stdlib 兼容性风险更高 —— 真要走，建议把
+    `since-build` 抬到 2023.x（内置 Kotlin 1.9）**一起做**，别只在 221 上赌。
+
+### 5. 结论（当前决策状态）
+
+- **已决定不做（用户决策 2026-10-20）**：构建工具链升 JDK 17 —— 收益仅"消除一条 Gradle 告警 +
+  为 Gradle 9 铺路"，性价比不足，**暂不执行**；继续维持 daemon JDK 11
+  （`org.gradle.java.home=D:/softwares/Java/jdk-11.0.32.1`）。
+  等迁 Gradle 9 时 daemon JDK 17+ 变成强制项，再与 KGP/Kotlin 一起升（勿提前改，避免多出一个变量）；
+- **待用户决策**：字节码 / 语言级别升 17（代价是放弃 2022.1 / 2022.2）；
+- **将来必须做**：迁 Gradle 9 时，daemon JDK 17+ 与 KGP/Kotlin ≥ 1.9.25（消除 Convention
+  deprecated）要一起升，见「构建告警清单」第 2、3 条。
+
+## verifyOnIde 超时陷阱（2026-10-18 实测）
 
 沙箱 IDE（`-Xmx750m`）就绪耗时**随机器负载剧烈波动**：空闲时 ~15s；本会话并发多个 Gradle daemon +
 用户 IDEA 时 **4~7 分钟**（卡在 `ApplicationLoader.initApplication:189` 等 `prepareUiFuture`，
