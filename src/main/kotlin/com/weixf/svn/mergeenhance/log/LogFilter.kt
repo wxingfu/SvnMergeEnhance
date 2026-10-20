@@ -25,13 +25,14 @@ import java.util.Date
  * 1. **搜索框文本**：只做子串/正则匹配，**永不**被解析成版本区间。
  *    早期实现会用「文本形如 `10-20`」来推断版本区间，于是搜 `2026-10`（想按月份搜）
  *    被静默改写成「版本 [10, 2026]」，结果恒为空且无任何提示。TortoiseSVN 没有这种语法：
- *    它的版本区间在独立的「Show range」对话框里（`m_startRev`/`m_endRev`），
- *    搜索框里修订号只是被当作**普通文本**参与匹配（`LogDlgFilter.cpp` 的 `LOGFILTER_REVS`）。
- *    本类用 [revFrom]/[revTo] 两个显式字段承载该语义。
+ *    它的搜索框里修订号只是被当作**普通文本**参与匹配（`LogDlgFilter.cpp` 的 `LOGFILTER_REVS`）。
  * 2. **日期区间**：纯**客户端**过滤，**不参与**任何远端查询。TortoiseSVN 同样如此——
  *    `m_tFrom`/`m_tTo` 只写进 `CLogDlgFilter`，而 filter 只用于 `m_logEntries.Filter(...)`
  *    内存过滤（`LogDlg.cpp` 的 `RecalculateShownList`）。
- * 3. **版本区间**：唯一会改变「去服务端取哪一段」的维度，由 [LogPageLoader] 消费。
+ *
+ * ⚠️ **版本区间维度已整体删除**（2026-10-20 第四轮，用户决策「不需要版本区间」）：
+ * 原先的 [revFrom]/[revTo] 字段与独立的「版本区间」对话框一并移除，
+ * 游标恒从 HEAD 开始（见 [LogPageLoader]）。
  */
 enum class LogFilterField(val id: String) {
     MESSAGE("message"),
@@ -62,7 +63,7 @@ enum class LogFilterField(val id: String) {
  * ## 判定顺序
  *
  * [matches] 与 TortoiseSVN 的 `CLogDlgFilter::operator()` 一致：**先硬边界、后文本**——
- * 版本区间 → 日期区间 → 文本匹配。硬边界不满足时直接排除，不再做昂贵的文本匹配。
+ * 日期区间 → 文本匹配。硬边界不满足时直接排除，不再做昂贵的文本匹配。
  */
 data class LogFilter(
     val searchText: String = "",
@@ -78,15 +79,6 @@ data class LogFilter(
     val dateRangeEnabled: Boolean = true,
     val fromDate: Date? = null,
     val toDate: Date? = null,
-    /**
-     * 版本区间下界（含），null 表示不限。
-     *
-     * 来自独立的「版本区间」对话框（对齐 TortoiseSVN 的 Show range），
-     * **不再**从搜索框文本推断——搜索框只负责文本匹配。
-     */
-    val revFrom: Long? = null,
-    /** 版本区间上界（含），null 表示不限。 */
-    val revTo: Long? = null,
     val useRegex: Boolean = false,
     val caseSensitive: Boolean = false,
     /** Bug-ID 提取正则（可在设置中修改；调用方负责在正则无效时回退默认值）。 */
@@ -95,43 +87,69 @@ data class LogFilter(
 
     val hasSearchText: Boolean get() = searchText.isNotBlank()
 
-    fun hasDateRange(): Boolean = dateRangeEnabled && (fromDate != null || toDate != null)
+    /**
+     * 搜索正文：去掉整段 `!` 取反标记后的文本。
+     *
+     * `!` 是**整段取反**标记（TortoiseSVN 的 `negate`），不参与分词。
+     */
+    private val body: String = searchText.trim().let { if (it.startsWith("!")) it.substring(1) else it }
 
-    fun hasRevisionRange(): Boolean = revFrom != null || revTo != null
-
-    /** 是否存在会改变结果集的条件。 */
-    fun isFiltering(): Boolean = hasDateRange() || hasRevisionRange() || hasSearchText
+    /** 整段是否为「取反」语义。 */
+    private val negate: Boolean = searchText.trim().startsWith("!")
 
     /**
-     * 单条日志是否命中。判定顺序：版本区间 → 日期区间 → 文本。
+     * 搜索词的 token 解析结果（**缓存**）。
      *
-     * 版本区间/日期区间都是**客户端**判定，因此无论它们由谁设置、什么时候设置，
-     * 都只影响"已加载数据的可见子集"，不会引起重新查询（见类文档「三个维度彼此独立」）。
+     * 为什么必须缓存：原先每判定**一条**修订都要重新分词一次，而扫描上万条时
+     * 分词开销与匹配开销同量级（每次都新建 List/Token）。分词结果只取决于
+     * 不可变的 [searchText]，解析一次即可；`lazy` 默认同步，多线程访问安全。
+     */
+    private val tokens: List<Token> by lazy { tokenize(body) }
+
+    fun hasDateRange(): Boolean = dateRangeEnabled && (fromDate != null || toDate != null)
+
+    /** 是否存在会改变结果集的条件。 */
+    fun isFiltering(): Boolean = hasDateRange() || hasSearchText
+
+    /**
+     * 单条日志是否命中。判定顺序：日期区间 → 文本。
+     *
+     * 日期区间是**客户端**判定，因此无论它由谁设置、什么时候设置，
+     * 都只影响"已加载数据的可见子集"，不会引起重新查询（见类文档「维度彼此独立」）。
      */
     fun matches(list: SvnChangeList): Boolean {
-        // 1. 版本区间（硬边界）
-        if (revFrom != null && list.number < revFrom) return false
-        if (revTo != null && list.number > revTo) return false
-        // 2. 日期区间（硬边界）
+        // 1. 日期区间（硬边界）
         if (dateRangeEnabled) {
             val d = list.commitDate ?: return false
             if (fromDate != null && d < fromDate) return false
             if (toDate != null && d > toDate) return false
         }
-        // 3. 文本匹配
-        val text = searchText.trim()
-        if (text.isEmpty()) return true
-        // 整段以 ! 取反
-        val negate = text.startsWith("!")
-        val body = if (negate) text.substring(1) else text
-        val result = matchText(list, body)
-        return if (negate) !result else result
+        // 2. 文本匹配
+        return matchesText(list)
     }
 
     // ----------------------------------------------------- 文本匹配（核心）
 
-    private fun matchText(list: SvnChangeList, text: String): Boolean {
-        val tokens = tokenize(text)
+    /**
+     * 只做**文本**维度匹配（跳过日期区间）。
+     *
+     * ## 用途
+     *
+     * 搜索命中与否只看文本；日期区间是**客户端**过滤的显示子集，
+     * 与"这条内容是否匹配搜索词"无关，分开判定语义更清晰。
+     *
+     * 顺带修掉一处**高亮与实际匹配不一致**的老问题：
+     * 旧实现里 [matches] 按去掉 `!` 的正文分词，而 [highlightRanges] 按原始
+     * `searchText` 分词（`!abc` 的 token 是 `!abc`），于是搜索 `!abc` 时
+     * 实际按 `abc` 匹配、高亮却按 `!abc` 找，两者对不上。
+     */
+    fun matchesText(list: SvnChangeList): Boolean {
+        if (tokens.isEmpty()) return true
+        val result = matchText(list)
+        return if (negate) !result else result
+    }
+
+    private fun matchText(list: SvnChangeList): Boolean {
         if (tokens.isEmpty()) return true
         val combined = buildCombined(list)
         return matchCombined(combined, tokens)
@@ -238,7 +256,7 @@ data class LogFilter(
 
     /** 在给定文本中找出所有命中区间，供渲染器按段着色（合并相邻/重叠区间）。 */
     fun highlightRanges(text: String): List<IntRange> {
-        val tokens = tokenize(searchText)
+        // 用缓存的 token（与 [matchesText] 同一份），保证"高亮"与"实际匹配"永远一致
         if (tokens.isEmpty()) return emptyList()
         val ranges = mutableListOf<IntRange>()
         for (t in tokens) {

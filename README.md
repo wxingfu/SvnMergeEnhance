@@ -52,9 +52,8 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 | 能力 | 说明 |
 |---|---|
-| 实时过滤 | TortoiseSVN 语法：空格分词，`-词` 排除、`+词` 或匹配、`"短语"`、`!` 取反；可勾选 Message / Path / Author / Revision / Bug-ID / Date 字段，支持正则与大小写敏感。**搜索框只做文本匹配**（`10-20`、`2026-10` 这类内容按字面匹配，不再被当成版本区间） |
-| 日期区间 | `From` / `To` 日历（点击即弹日历，**周一在首列、周日在末列**），**纯客户端**按提交日期过滤；对话框打开时默认覆盖已加载数据的提交日期范围，日历可选范围也锁在该范围内 |
-| 版本区间 | 点击顶部「版本区间…」按钮（复刻 TortoiseSVN Show range）输入上/下界修订号；**只有它**会改变向服务端请求的版本范围，搜索框不再解析版本区间 |
+| 实时过滤 | TortoiseSVN 语法：空格分词，`-词` 排除、`+词` 或匹配、`"短语"`、`!` 取反；可勾选 Message / Path / Author / Revision / Bug-ID / Date 字段，支持正则与大小写敏感。**搜索框只做文本匹配**，且**只过滤已加载的修订**（不自动向服务器要更多；命中不足时可点「+100 / +500 / 全部显示」继续加载） |
+| 日期区间 | `From` / `To` 日历（点击即弹日历，**周一在首列、周日在末列**），**纯客户端**按提交日期过滤；对话框打开时默认覆盖已加载数据的提交日期范围，日历可选范围也锁在该范围内；改日期同样**不触发任何服务器请求** |
 | 分页加载 | 首屏 + 「+100 / +500 / 全部显示」实时向仓库翻页（游标分页，单通道），不用本地缓存 |
 | 合并状态 | 每行显示 已合并 ✔ / 外来修订（无图标）/ 计算中 图标；右栏对**已合并**文件追加 `[Already merged]` |
 | 变更文件 | 右侧 `CommittedChangesBrowser` 展示所选修订的变更路径，支持 `Ctrl+D` 查看差异 |
@@ -128,7 +127,7 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 5. **④ 选择修订**：
    - 勾选需要合并的版本（鼠标点行首复选框，或选中行后按 `Space`）；
-   - 顶部过滤栏缩小范围：`By ▾` 选字段、搜索框输入关键词（支持 `-排除`、`+或`、`"短语"`、`!` 取反，**只做文本匹配**）、`From/To` 限定日期（点击日期框即弹出日历，周一在首列、周日在末列）；需要按版本号范围过滤时，点「版本区间…」按钮输入上/下界修订号；
+   - 顶部过滤栏缩小范围：`By ▾` 选字段、搜索框输入关键词（支持 `-排除`、`+或`、`"短语"`、`!` 取反，**只做文本匹配**）、`From/To` 限定日期（点击日期框即弹出日历，周一在首列、周日在末列）；搜索只过滤**已加载**的修订，命中不足时点「+100 / +500 / 全部显示」继续加载（不会自动请求服务器）；
    - 「+100 / +500 / 全部显示」继续向后翻页；`Refresh` 按当前条件重查；
    - 列表内直接输入文字可快速定位到匹配提交；选中行后 `Ctrl+D` 查看该修订差异；
    - 底部状态栏实时确认：「显示 N 个版本（rA–rB）— 已选 M 个，包含 K 个路径」。
@@ -151,7 +150,7 @@ Working Copies Information 面板 → Enhance Merge… 链接
 | 能力 | 使用的内置插件 API |
 |---|---|
 | 分支选择 | `SelectBranchPopup.showForBranchRoot(...)` + `SvnBranchConfigurationNew`（原版弹窗，零自绘） |
-| 修订日志 | `MergeCalculatorTask.loadChangeLists(ctx, cursor, size)`（游标分页，单通道；日期区间改为客户端过滤，不再走 `SvnCommittedChangesProvider`） |
+| 修订日志 | `MergeCalculatorTask.loadChangeLists(ctx, cursor, size)`（游标分页，单通道；日期区间与搜索词均为客户端过滤，不再走 `SvnCommittedChangesProvider`） |
 | 列表渲染 | `TableView` + `ListTableModel` + `CommittedChangesBrowser` + `CommittedChangesTreeBrowser.collectChanges` |
 | 勾选语义 | `QuantitySelection<Long>`（稀疏表示：全选后排除个别） |
 | 合并状态 | `OneShotMergeInfoHelper(context)`（`MergeChecker`）+ `ListMergeStatus`（图标）/ `ChangeNodeDecorator`（`[Already merged]`） |
@@ -165,11 +164,13 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
    | 模式 | 触发 | 数据来源 | 分页 |
    |---|---|---|---|
-   | 游标模式（单通道） | 始终 | `MergeCalculatorTask.loadChangeLists`（按版本游标翻页） | 服务端分页 + 客户端过滤不足时循环补页（≤10 批） |
+   | 游标模式（单通道） | 始终 | `MergeCalculatorTask.loadChangeLists`（按修订号游标翻页） | 服务端分页，单次翻页补页 ≤10 批 |
 
-   三个过滤维度只影响**客户端展示**，不切换查询通道：
+   两个过滤维度只影响**客户端展示**，**不切换查询通道、不触发服务器请求**：
    - **搜索 / 日期区间**：纯客户端过滤（日期区间默认开启、值 = 已加载数据的提交日期，可选范围锁在数据内）；
-   - **版本区间**：由顶部「版本区间…」对话框设置，改写游标上/下界（复刻 TSVN Show range）——**只有它**会改变向服务端 `svn log` 请求的版本范围，`revFrom` 命中即早停、`revTo` 作为游标起点。
+   - 搜索命中不足时**不自动**向服务器要更多，状态栏提示可点「+100 / +500 / 全部显示」继续加载（对齐 TortoiseSVN：只有 Next / Show all 才请求）。
+
+   向服务器要数据只有三个入口：**首屏**、**「+100 / +500 / 全部显示」**、**「重新整理」**（清空并从 HEAD 重查）。
 
 2. **合并状态**（T8）后台线程批量调 `MergeChecker.checkList()`，映射 `MERGED→MERGED` / `NOT_EXISTS→ALIEN` / 其余→`REFRESHING`，每 10 条批量重绘一次；图标渲染在**复选框之后**（命中区 `[cell.x, cell.x+checkboxWidth]` 与视觉对齐）。右栏 `[Already merged]` 取 `getNotMergedPaths` 的补集。
 
@@ -209,7 +210,6 @@ SubversionEnhance/
 │   ├── settings/EnhanceMergeConfigurable.kt # 设置页 UI（Version Control 分组）
 │   ├── ui/RevisionSelectDialog.kt       # 修订选择对话框（renderer / 分页 / 合并状态 / 快速搜索）
 │   ├── ui/LogFilterPanel.kt             # 顶部过滤栏（By ▾ / 搜索框 / 起止日历）
-│   ├── ui/RevRangeDialog.kt              # 版本区间对话框（复刻 TSVN Show range）
 │   ├── ui/MergeVariantDialog.kt         # 合并方式确认（Revision Select / Cancel）
 │   └── wcinfo/WcInfoLinkInjector.kt     # 向 Working Copies Information 面板注入 Enhance Merge 链接
 ├── src/main/resources/
@@ -218,8 +218,8 @@ SubversionEnhance/
 │   ├── pluginIcon.svg / pluginIcon_dark.svg    # 插件图标 40×40（浅色 / 深色主题）
 │   └── THIRD-PARTY-LICENSES.txt        # 第三方许可全文（LGoodDatePicker，MIT）
 └── src/test/kotlin/com/svn/revisionselect/
-    ├── LogFilterTest.kt                 # 过滤语义 24 用例（文本语法 / 字段 / 日期区间边界 / 版本区间为硬边界）
-    ├── LogPageLoaderTest.kt             # 游标单通道分页 15 用例（世代号 / 补批 / MAX_BATCHES / reopenIfExhausted）
+    ├── LogFilterTest.kt                 # 过滤语义 24 用例（文本语法 / 字段 / 日期区间边界 / 纯文本匹配 / 取反与高亮一致）
+    ├── LogPageLoaderTest.kt             # 游标单通道分页 12 用例（世代号 / 补批 / MAX_BATCHES / reopenIfExhausted）
     ├── QuantitySelectionTest.kt         # 稀疏勾选 9 用例
     ├── EnhanceMergeBundleTest.kt        # 文案 bundle 3 用例（基包 / _zh_CN / 缺键回退）
     ├── BundleKeysTest.kt                # 文案 key 双向对齐 4 用例
@@ -298,8 +298,8 @@ SubversionEnhance/
 
 | 测试类 | 用例数 | 覆盖 |
 |---|---|---|
-| `LogFilterTest` | 24 | 空条件、单/多词 AND、`-` 排除、`+` 或组、引号短语、`!` 取反、大小写敏感、正则模式（含非法正则）、Bug-ID 字段（默认/自定义正则）、日期区间（默认开 / 客户端过滤 / 含边界）、版本区间为独立硬边界（搜索框不解析 `10-20`）、含 `-` 文本不被误判为区间、高亮区间、字段选择 |
-| `LogPageLoaderTest` | 15 | 游标单通道：推进 / 到底 / 整页保守判定 / `revFrom` 早停 / 补批 / `MAX_BATCHES` 上限 / `reopenIfExhausted`；**世代号**：stale 世代号不发包、条件变化后旧在飞任务作废 |
+| `LogFilterTest` | 24 | 空条件、单/多词 AND、`-` 排除、`+` 或组、引号短语、`!` 取反、大小写敏感、正则模式（含非法正则）、Bug-ID 字段（默认/自定义正则）、日期区间（默认开 / 客户端过滤 / 含边界）、纯文本匹配（忽略日期）、取反与高亮一致、含 `-` 文本不被误判为区间、高亮区间、字段选择 |
+| `LogPageLoaderTest` | 12 | 游标单通道：推进 / 到底 / 整页保守判定 / 补批 / `MAX_BATCHES` 上限 / `reopenIfExhausted`；**世代号**：stale 世代号不发包、reset 后旧在飞任务作废 |
 | `EnhanceMergeBundleTest` | 3 | 文案 bundle：基包 / `_zh_CN` / 缺键回退（含 properties ↔ 代码引用双向对齐守护） |
 | `BundleKeysTest` | 4 | 文案 key：properties ↔ 代码引用双向对齐 |
 | `EnhanceMergeSettingsTest` | 8 | 设置持久化：默认日期范围语义、开关状态沿用、日期区间开关默认值 |

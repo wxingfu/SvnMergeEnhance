@@ -25,6 +25,9 @@ import kotlin.test.assertTrue
  * 会得到不同结果集，且"改搜索词"会隐式切换通道。现已按 TortoiseSVN 的做法收敛为单通道
  * （日期区间只做客户端过滤），因此本类不再有模式 A 用例。
  *
+ * 版本区间维度已在第四轮整体删除（用户决策「不需要版本区间」）：游标恒从 HEAD 开始，
+ * `reset()` 不再接受任何参数。
+ *
  * `MergeContext` 用 relaxed mock：加载器只在默认数据源路径上读它，注入路径完全不碰。
  */
 class LogPageLoaderTest {
@@ -43,8 +46,8 @@ class LogPageLoaderTest {
     private fun page(vararg numbers: Long) = numbers.map { list(it) }
 
     /** 取一页：自动带上当前世代号，模拟"调用方在启动任务前抓到快照"。 */
-    private fun LogPageLoader.fetch(filter: LogFilter = LogFilter(), size: Int): List<SvnChangeList> =
-        loadNextPageRaw(filter, size, snapshot())
+    private fun LogPageLoader.fetch(size: Int): List<SvnChangeList> =
+        loadNextPageRaw(size, snapshot())
 
     // -------------------------------------------------- 游标推进
 
@@ -106,48 +109,20 @@ class LogPageLoaderTest {
         assertTrue(loader.allLoaded)
     }
 
+
     @Test
-    fun `reset applies the revision upper bound with plus one`() {
+    fun `reset starts from head`() {
         val seen = mutableListOf<Long>()
         val loader = LogPageLoader(context, cursorSource = { cursor, _ ->
             seen += cursor
             emptyList<SvnChangeList>() to true
         })
-        // 版本区间 [空, 20] → 游标应为 20 + 1（原版 loadChangeLists 排除等于 beforeRevision 的条目）
-        loader.reset(LogFilter(revTo = 20L))
-        assertEquals(21, loader.cursor)
-
-        loader.fetch(size = 10)
-        assertEquals(listOf(21L), seen)
-    }
-
-    @Test
-    fun `reset without a range starts from head`() {
-        val seen = mutableListOf<Long>()
-        val loader = LogPageLoader(context, cursorSource = { cursor, _ ->
-            seen += cursor
-            emptyList<SvnChangeList>() to true
-        })
-        loader.reset(LogFilter(searchText = "login"))
+        loader.reset()
         assertEquals(-1L, loader.cursor)
         loader.fetch(size = 10)
         assertEquals(listOf(-1L), seen)
     }
 
-    @Test
-    fun `cursor mode stops early at the revision lower bound`() {
-        // 下界 15：遇到 < 15 的修订立即停止，不再继续取
-        var calls = 0
-        val loader = LogPageLoader(context, cursorSource = { _, _ ->
-            calls++
-            page(20, 19, 18, 17, 16, 15, 14, 13, 12, 11) to false
-        })
-        val result = loader.fetch(LogFilter(revFrom = 15L), 10)
-        // 只保留 >= 15 的 6 条
-        assertEquals(listOf(20L, 19L, 18L, 17L, 16L, 15L), result.map { it.number })
-        assertTrue(loader.allLoaded)
-        assertEquals(1, calls)
-    }
 
     @Test
     fun `cursor mode refills when the first batch is short`() {
@@ -182,7 +157,7 @@ class LogPageLoaderTest {
     fun `reset bumps the generation`() {
         val loader = LogPageLoader(context, cursorSource = { _, _ -> emptyList<SvnChangeList>() to false })
         val before = loader.snapshot()
-        loader.reset(LogFilter(revTo = 10L))
+        loader.reset()
         assertTrue(loader.snapshot() > before)
     }
 
@@ -190,13 +165,13 @@ class LogPageLoaderTest {
     fun `stale generation yields nothing instead of polluting the loader`() {
         val loader = LogPageLoader(context, cursorSource = { _, _ -> page(10, 9, 8, 7, 6, 5, 4, 3, 2, 1) to false })
         val stale = loader.snapshot()
-        // 期间条件变了（版本区间改动 → reset）
-        loader.reset(LogFilter(revFrom = 3L))
+        // 期间条件变了（重新整理 → reset）
+        loader.reset()
         // 在飞任务用旧世代号继续取：必须空手而归，不得把旧条件的数据塞进新缓冲
-        assertTrue(loader.loadNextPageRaw(LogFilter(), 10, stale).isEmpty())
-        // 新世代号正常工作，且只拿到 >= 下界的条目
-        val fresh = loader.fetch(LogFilter(revFrom = 3L), 10)
-        assertEquals(listOf(10L, 9L, 8L, 7L, 6L, 5L, 4L, 3L), fresh.map { it.number })
+        assertTrue(loader.loadNextPageRaw(10, stale).isEmpty())
+        // 新世代号正常工作：拿回完整的一页（版本区间维度已删除，无下界早停）
+        val fresh = loader.fetch(10)
+        assertEquals(listOf(10L, 9L, 8L, 7L, 6L, 5L, 4L, 3L, 2L, 1L), fresh.map { it.number })
     }
 
     @Test
@@ -207,19 +182,12 @@ class LogPageLoaderTest {
             page(50, 49) to false
         })
         val generation = loader.snapshot()
-        // 条件变了（reset）后，在飞任务连一次请求都不该发出——发出去就是拿旧条件污染服务端往返
-        loader.reset(LogFilter(revTo = 1L))
-        assertTrue(loader.loadNextPageRaw(LogFilter(), 10, generation).isEmpty())
+        // reset 后，在飞任务连一次请求都不该发出——发出去就是拿旧条件污染服务端往返
+        loader.reset()
+        assertTrue(loader.loadNextPageRaw(10, generation).isEmpty())
         assertEquals(0, call)
     }
 
-    @Test
-    fun `an invalid range falls back to head instead of an unreachable cursor`() {
-        // revFrom > revTo（理论上 UI 已拦）：不能把游标设到下界之下，否则首屏直接被判到底
-        val loader = LogPageLoader(context, cursorSource = { _, _ -> emptyList<SvnChangeList>() to false })
-        loader.reset(LogFilter(revFrom = 100L, revTo = 10L))
-        assertEquals(-1L, loader.cursor)
-    }
 
     @Test
     fun `reopenIfExhausted allows one more round trip`() {
@@ -241,8 +209,8 @@ class LogPageLoaderTest {
 
     @Test
     fun `the loader ignores dates and search text entirely`() {
-        // 关键契约：加载器只认版本区间。日期/文本由对话框在内存里过滤，
-        // 因此带日期的 filter 不会让加载器多拉或少拉任何数据（对齐 TortoiseSVN）。
+        // 关键契约：加载器**只按修订号游标**取数。日期/文本/搜索词全部由对话框在内存里过滤，
+        // 因此加载器不受任何过滤条件影响（对齐 TortoiseSVN：服务端只认 m_startRev/m_limit）。
         var calls = 0
         val loader = LogPageLoader(context, cursorSource = { _, _ ->
             calls++
@@ -255,7 +223,7 @@ class LogPageLoaderTest {
             searchText = "login",
             fields = setOf(LogFilterField.MESSAGE),
         )
-        val raw = loader.fetch(withDate, 10)
+        val raw = loader.fetch(10)
         assertEquals(10, raw.size)
         assertEquals(30L, raw.first().number)
         assertEquals(21L, raw.last().number)

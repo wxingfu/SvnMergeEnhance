@@ -7,7 +7,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.VirtualFile
 import com.weixf.svn.mergeenhance.EnhanceMergeBundle
-import com.weixf.svn.mergeenhance.log.LogFilter
 import com.weixf.svn.mergeenhance.log.LogPageLoader
 import com.weixf.svn.mergeenhance.merge.MergeExecutor
 import com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings
@@ -101,8 +100,8 @@ object MergeFlow {
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                // 首屏：加载器刚创建、世代号即 0，此处不需要任何过滤条件（无版本区间 = 从 HEAD 开始）
-                items = loader.loadNextPageRaw(LogFilter(), EnhanceMergeSettings.getInstance().pageSize, loader.snapshot())
+                // 首屏：加载器刚创建、世代号即 0，游标从 HEAD 开始
+                items = loader.loadNextPageRaw(EnhanceMergeSettings.getInstance().pageSize, loader.snapshot())
             }
 
             override fun onSuccess() {

@@ -335,127 +335,142 @@ SelectBranchPopup.showForBranchRoot(
 |---|---|---|---|
 | 路径 | 前缀/包含匹配 `SvnChangeList.affectedPaths` | 客户端 | 原版无此能力 |
 | 作者 | `ChangeBrowserSettings.USER` | 客户端（IDEA handler 内） | 循环补页规避"过滤后不足一页" |
-| 版本 从/到 | 修订号闭区间 | **服务端上界**（起始游标）+ **客户端下界** | 见 §5.4.1 双模式 |
 | Bug-ID | 正则（默认 `[A-Z][A-Z0-9]+-\d+`）从 comment 提取后比较 | 客户端 | 设置项可改正则 |
-| 日期 从/到 | 提交日期闭区间（到日含当天全天） | **服务端**（`svn log -r {date}:{date}`） | 与图5 的"起始/结束"一致；**优先级高于版本区间** |
+| 日期 从/到 | 提交日期闭区间（到日含当天全天） | **客户端**（纯过滤，不参与查询） | 对齐 TortoiseSVN：`m_tFrom`/`m_tTo` 只写进 `CLogDlgFilter`，只用于 `m_logEntries.Filter(...)`；默认开启、值 = 已加载数据的 min/max、可选范围锁在数据内 |
 | 信息包含/排除 | 关键字（逗号分隔，AND/OR） | 客户端 | 沿用 v1 的 `RevisionFilter` 语义 |
 
-**生效时机**：`DocumentListener` + 300ms `Alarm` 防抖 → 条件变化即**重置游标、从 HEAD 重查第一页**。
-这就是"实时加载 SVN Log"的实现方式（不是把全量日志缓存在内存里过滤）。
+> ⚠️ **版本区间（从/到）已按用户决策整体删除**（2026-10-20 第四轮）：过滤栏不再有该维度，
+> `LogFilter.revFrom`/`revTo`、`ui/RevRangeDialog`、工具栏「版本区间…」动作一并移除。
+> 游标恒从 HEAD 开始；`loader.reset()` 仅保留给 `Refresh`（清空并从 HEAD 重查）。
 
-#### 5.4.1 日期区间与版本区间并存时的筛选顺序（用户决策：先日期，后版本区间）
+**生效时机**：`DocumentListener` + 300ms `Alarm` 防抖 → 条件变化即**对已加载集合重过滤**。
+**不重查服务器**：搜索与日期区间都只影响"已加载数据的可见子集"；向服务端要数据只由
+用户的显式动作驱动（「+100 / +500 / 全部显示 / Refresh」）。这正是 TortoiseSVN 的做法
+（`m_logEntries.Filter(...)` 纯内存，`OnClickedNext`/`OnBnClickedShowAll` 才请求）。
 
-**决策**：两者同时填写时，**先用日期区间从服务端限定拉取范围，再在结果上按版本区间筛选**。
-即日期区间**优先**（决定服务端查询），版本区间在其结果上二次过滤。
+#### 5.4.1 查询通道：只有一条（游标分页），过滤全部在客户端
 
-必须这样设计的原因（源码事实）：
-`SvnCommittedChangesProvider.createRevision(date, change, default)` 对**同一边界**取 `date != null ? Revision.of(date) : change != null ? Revision.of(change) : default`
-—— `DATE_BEFORE` 会**静默覆盖** `CHANGE_BEFORE`，`DATE_AFTER` 覆盖 `CHANGE_AFTER`。
-若把两者都塞给 `ChangeBrowserSettings`，版本区间会被悄悄丢掉，且**分页游标（`CHANGE_BEFORE`）同样失效导致死循环翻页**。
+**决策（2026-10-20 第四轮，最终态）**：服务端查询**只有一条通道**——按修订号游标向后翻页；
+**日期区间与搜索词都不参与查询**，只在客户端对已加载集合做过滤。版本区间整体删除。
 
-因此显式分成两种模式：
+TortoiseSVN 的对照（`LogDlg.cpp` / `LogDlgFilter.cpp`）：服务端查询参数只有
+`m_path/m_pegRev/m_startRev/m_endRev/m_limit/m_bStrict/m_bIncludeMerges` 七个；
+`m_tFrom`/`m_tTo` 与搜索词只写进 `CLogDlgFilter`，用于 `m_logEntries.Filter(...)` 内存过滤，
+**从不**参与查询；`m_startRev`/`m_endRev`（Show range）才是版本范围——本插件第四轮已删除该维度。
 
-| 模式 | 触发条件 | 服务端查询 | 版本区间 | 分页方式 |
-|---|---|---|---|---|
-| **A 日期模式** | 日期"从"或"到"任一已填 | `svn log -r {dateTo}:{dateFrom}`，`limit=0`（一次拉完该日期区间） | **客户端**过滤 | 内存分页（首屏 30，加载更多从已拉取结果取） |
-| **B 游标模式** | 日期均空 | `MergeCalculatorTask.loadChangeLists(ctx, cursor, pageSize)` | **服务端上界**（起始游标）+ **客户端下界** | 服务端分页，循环补页 |
+| 维度 | 是否影响"向服务端要哪一段" | 处理 |
+|---|---|---|
+| 搜索词 | **否** | 客户端重过滤已加载集合；**命中不足也不再自动请求**（见 §5.4.4） |
+| 日期区间 | **否** | 客户端重过滤已加载集合；值 = 已加载数据的 min/max，可选范围锁在数据内 |
+| 版本区间 | ~~是~~ | **已删除该维度** |
 
-细节：
-- 模式 A 与 TortoiseSVN 行为一致（拉完日期区间内全部日志后本地展示）；
-  保护阈值：单次拉取 > 5000 条时在状态栏提示"结果过多，建议缩小日期范围"，但不阻断。
-- 模式 B 的版本区间处理：
-  - 「版本 到」→ 首屏起始游标 `beforeRevision = revTo + 1`
-    （注意：`loadChangeLists` 内部会**排除**与 `beforeRevision` 相等的修订号，故必须 `+1`）；
-  - 「版本 从」→ 客户端 `revision >= revFrom` 过滤，并在扫描中遇到 `revision < revFrom` 时置 `allLoaded = true`（早停），
-    避免一路扫到 r1。
-- 两种模式共用同一套客户端过滤器（路径 / 作者 / Bug-ID / 包含-排除 / 版本下界），顺序固定为：
-  **版本区间 → 路径 → 作者 → Bug-ID → 包含 → 排除**。
+关键约束（曾经踩过的坑）：
+
+- `SvnCommittedChangesProvider.createRevision(date, change, default)` 对**同一边界**取
+  `date != null ? Revision.of(date) : change != null ? Revision.of(change) : default`
+  —— `DATE_BEFORE` 会**静默覆盖** `CHANGE_BEFORE`，`DATE_AFTER` 覆盖 `CHANGE_AFTER`。
+  若把日期与版本条件同时塞给 `ChangeBrowserSettings`，版本条件会被悄悄丢掉，且
+  **分页游标（`CHANGE_BEFORE`）同样失效导致死循环翻页**。
+  → 第四轮之后日期/版本**都不再**进入服务端参数，这条坑随之消失（但结论仍要记住：
+  **同一个边界不能同时交给两个条件**）。
+- 客户端过滤顺序固定：**版本区间（已删）→ 日期区间 → 路径 → 作者 → Bug-ID → 包含 → 排除**。
 
 ```kotlin
 class LogPageLoader(private val ctx: MergeContext) {
-    private var cursor: Long = -1            // 模式 B：上一页最小修订号
-    private var buffer: List<SvnChangeList> = emptyList()   // 模式 A：日期区间内的全量结果
-    private var bufferPos = 0                               // 模式 A：内存分页位置
+    var cursor: Long = -1                 // 上一页最小修订号；-1 = 从 HEAD 开始
     var allLoaded = false; private set
+    private var generation: Long = 0L     // 世代号：reset() 递增，在飞任务据此作废
 
-    fun reset(filter: LogFilter) {
-        cursor = filter.revTo?.plus(1) ?: -1   // 模式 B 起始上界；null → HEAD
-        buffer = emptyList(); bufferPos = 0; allLoaded = false
-    }
+    fun snapshot(): Long = generation
+    fun reset() { generation++; cursor = -1L; allLoaded = false }
 
-    /** 取下一页（至多 pageSize 条满足全部过滤条件的修订）。必须在后台线程调用。 */
-    fun loadNextPage(filter: LogFilter, pageSize: Int): PageResult {
-        return if (filter.hasDateRange()) loadFromDateBuffer(filter, pageSize)
-               else loadByCursor(filter, pageSize)
-    }
-
-    private fun loadFromDateBuffer(filter: LogFilter, pageSize: Int): PageResult {
-        if (buffer.isEmpty() && !allLoaded) {
-            buffer = fetchByDate(filter)          // 一次 doLog(-r {dateTo}:{dateFrom}, limit=0)
-            allLoaded = true                      // 日期区间内已全量，可一次判定到底
-        }
-        val matched = buffer.filter { filter.matchesClientSide(it) }
-        val page = matched.drop(bufferPos).take(pageSize)
-        bufferPos += pageSize
-        return PageResult(page, bufferPos >= matched.size)
-    }
-
-    private fun loadByCursor(filter: LogFilter, pageSize: Int): PageResult {
-        val matched = ArrayList<SvnChangeList>()
+    /** 取下一页**原始**（未客户端过滤）修订。必须在后台线程调用。 */
+    fun loadNextPageRaw(pageSize: Int, expectedGeneration: Long): List<SvnChangeList> {
+        if (expectedGeneration != generation) return emptyList()   // 世代号不符：立刻退出
+        val raw = ArrayList<SvnChangeList>()
         var batches = 0
-        while (matched.size < pageSize && !allLoaded && batches++ < MAX_BATCHES /*10*/) {
-            val (raw, done) = MergeCalculatorTask.loadChangeLists(ctx, cursor, pageSize)  // 实时 doLog
-            if (raw.isEmpty()) { allLoaded = true; break }
-            cursor = raw.last().revision                     // 游标永远推进
-            var stop = false
-            for (item in raw) {
-                if (filter.revFrom != null && item.revision < filter.revFrom) { stop = true; break }
-                if (filter.matchesClientSide(item)) matched += item
-            }
-            if (stop || done) allLoaded = true
+        while (raw.size < pageSize && !allLoaded && batches++ < MAX_BATCHES /*10*/) {
+            if (expectedGeneration != generation) return raw
+            val (page, done) = MergeCalculatorTask.loadChangeLists(ctx, cursor, pageSize)  // 实时 doLog
+            if (page.isEmpty()) { allLoaded = true; break }
+            cursor = page.last().number
+            allLoaded = done && page.size < pageSize
+            raw.addAll(page)
         }
-        return PageResult(matched, allLoaded)
+        return raw
     }
 }
 ```
 
-- 首屏（模式 B、无过滤）：`pageSize = settings.pageSize`（默认 **100**，对齐 TortoiseSVN）→ 一条 `svn log --limit 101`，毫秒级返回。
-- `MAX_BATCHES` 保证最坏情况 ≈ 300 条日志的扫描量，不会因为"该分支没有匹配项"卡死。
+- 首屏：`pageSize = settings.pageSize`（默认 **100**，对齐 TortoiseSVN）→ 一条 `svn log`，毫秒级返回。
+- `MAX_BATCHES` 保证单次翻页最坏扫描量有限（≈ 10 × pageSize 条原始日志）。
 - 全部在 `Task.Backgroundable` 里跑（不阻塞 EDT），带 `ProgressIndicator` 可取消。
 
-#### 5.4.2 2026-10-19 修正（R1+R2+R3：搜索精准度与深历史可达性）
+#### 5.4.2 2026-10-19 修正（R1+R2+R3：搜索精准度与深历史可达性）— **部分已被第四轮取代**
+
+> ⚠️ 保留本节作为**历史决策记录**；其中 R3 的「搜索时自动向后扫描」已被第四轮取消（见 §5.4.4）。
+> R1 的「日期区间默认关闭」也已被第三轮改为「默认开启、值 = 已加载数据范围」。
 
 实测暴露三类问题（含 `#` 的备注搜不到、大库啥也搜不到、改搜索词即清空重拉且丢深历史），根因与修复：
 
 1. **R1 日期区间默认开启 + 预填首屏窄窗口**：`dateRangeEnabled` 原默认 `true`，对话框打开时
    `initDateRange` 把起止日历设成首屏日志的日期跨度，于是 `hasDateRange()` 恒真 → 走模式 A 只拉那一小段，
-   更早提交永不入可搜索集。修复：默认值改为 `false`，默认走模式 B 从 HEAD 往回扫全量；日期区间改为用户显式勾选才生效。
+   更早提交永不入可搜索集。修复（第三轮最终态）：日期区间改为**纯客户端**过滤，默认开启且值 = 已加载数据范围。
 2. **R2 改搜索词清空重拉**：原 `onFilterChanged` 每次 `model.setItems(emptyList())` 后从 HEAD 重拉第一页，
    已下载版本被丢弃、无法累计深度。修复：对话框维护一份**内存中已下载原始全集** `loadedAll`，
-   过滤条件变化时**只对该全集即时重过滤**（零远端请求），仅当结果不足且 `loader.allLoaded == false` 时才向后扩充加载。
-3. **R3 扫描深度硬上限**：模式 B 受 `MAX_BATCHES=10` 截断。修复：搜索时通过
-   `LogPageLoader.loadNextPageRaw`（返回未文本过滤的原始修订）持续向后扫描，直至凑够 `SEARCH_MATCH_TARGET`(100)
-   条命中或 `loader` 到底或触达 `MAX_SEARCH_ROUNDS`(200) 安全上限；「加载更多 / 全部显示」同样在 `loadedAll` 全集上操作，
-   深历史可被命中且不静默丢弃。
+   过滤条件变化时**只对该全集即时重过滤**（零远端请求）。**这一条第四轮保留**。
+3. **R3 扫描深度硬上限**：模式 B 受 `MAX_BATCHES=10` 截断。当时的修复是「搜索时通过
+   `loadNextPageRaw` 持续向后扫描，直至凑够 `SEARCH_MATCH_TARGET`(100) 条命中或触达
+   `MAX_SEARCH_ROUNDS`(200) 上限」。**第四轮取消该自动扫描**（它正是请求雪崩与 EDT 卡死的源头），
+   改为：搜索只过滤已加载集合，命中不足时提示用户手动「+100 / 全部显示」。
 
 > 该修正仅在**单次对话框会话的内存**内运作，关掉对话框即释放，不落盘、不累积磁盘缓存（小笔记本零负担）。
 > 跨会话秒开所需的持久化日志缓存作为可选后续，默认关闭、带限容。
 
-#### 5.4.3 2026-10-19 修正（R4：日期区间模式下搜索出现无关内容）
+#### 5.4.3 2026-10-19 修正（R4：日期区间模式下搜索出现无关内容）— **已被第三轮取代**
 
-实测（勾选日期区间后再搜索）暴露模式 A 两处缺陷，根因与修复：
+> ⚠️ 本节针对的是**模式 A**（日期服务端查询通道），该通道已在**第三轮整体删除**，
+> 故其两条修复（`loadFromDateRangeRaw` 缓冲分页语义、`dateRangeChanged` 触发重拉）**均已作废**。
+> 保留本节仅为历史可追溯；**不要**再按本节实现。
 
-1. **`loadFromDateRangeRaw` 缓冲拉完即置 `allLoaded=true`**：`svn log -r {date}:{date}` 整段一次性拉回后，
-   对话框误判"再无数据"——搜索扩充循环 `while(!loader.allLoaded …)` 一轮即停（只覆盖区间**前 100 条**原始数据）、
-   `+100/+500` 按钮因 `isVisible = !loader.allLoaded` 被隐藏。修复：`allLoaded` 在模式 A 改为"缓冲分页到底"
-   （`bufferPos >= buffer.size`）才算取完，搜索扩充 / `+N` / 全部显示恢复对整段区间的覆盖。
-2. **改 From/To 区间值不重拉**：`onFilterChanged` 只在"日期开关翻转"时清空重拉，区间**值**变化不触发，
-   旧区间缓冲被继续复用、新日期范围被静默忽略，界面停留在旧数据上 → 表现为"搜出来的都是无关内容"。
-   修复：`onFilterChanged` 新增 `dateRangeChanged` 判定（模式 A 内 From/To 变化也清空重拉，防抖后一次服务端查询）；
-   搜索扩充循环改用「原始页为空」作统一到底信号，不再被模式 A 的 `allLoaded` 提前截断。
+实测（勾选日期区间后再搜索）暴露模式 A 两处缺陷，当时的修复：
 
-> 验证：`LogPageLoaderTest` 新增 2 个回归用例（模式 A 原始分页 `allLoaded` 语义、区间值变化后按新区间重拉）；
-> `test` / `buildPlugin` / `verifyOnIde -PideaVersion=2022.1` 全通过（沙箱 PASS，issues 0）。
+1. **`loadFromDateRangeRaw` 缓冲拉完即置 `allLoaded=true`** → 改为"缓冲分页到底"才算取完。**已作废**（模式 A 已删）。
+2. **改 From/To 区间值不重拉** → 新增 `dateRangeChanged` 判定清空重拉。**已作废**（日期区间不再影响查询，无需重拉）。
+
+#### 5.4.4 2026-10-20 第四轮：搜索只搜「已加载」+ 删除版本区间（**用户决策已定，代码待实施**）
+
+**用户决策（三条）**：
+
+1. **搜索不再自动加载「不在当前页」的 Log**——但**不是不加载**：搜索是纯客户端过滤，作用于
+   **当前已加载集合**（首屏 + 用户手动「+100 / +500 / 全部显示」加载到的部分）；命中不足时
+   **不自动**向服务器请求，改为状态栏提示，用户自行决定是否加载更多；加载更多后搜索结果自动重算。
+2. **版本区间功能不需要** → 整体删除（`ui/RevRangeDialog`、`LogFilter.revFrom`/`revTo`、工具栏动作）。
+3. 方案落到文档，**代码待确认后再动**。
+
+**为什么必须改（现状分析）**：`onFilterChanged` 在 `model.rowCount < SEARCH_MATCH_TARGET`(100) 时
+启动 `runExtendSearch` 自动向后扫描（≤200 轮 / ≤20000 条原始修订），带来三条放大路径：
+
+| # | 放大路径 | 后果 |
+|---|---|---|
+| ① | 命中判定 `filter.matches` **含日期区间**（客户端条件） | 收窄日期 → 命中恒 0 → 必扫到上限，请求量最大 |
+| ② | 旧扫描任务**不取消**（`reloadToken` 只丢回调、`indicator.cancel()` 零处调用），且多任务**共享同一 `loader`** 互抢游标 | 每敲一个字符叠一个并发扫描（IME 一次词叠 5~10 个）→ 请求量成倍放大 |
+| ③ | `applyFilterToModel()` 在 **EDT** 上对全集做 `filter { matches(it) }`（每条拼提交说明+全部路径+作者+日期+版本号，可能跑 Bug-ID 正则 + 整串 `lowercase()`） | 2 万条 ≈ EDT 冻结 0.4~1 秒；累积到 5~10 万条 → 数秒到十几秒无响应 —— **这才是用户感知的"卡死"** |
+
+外加：`loadedAll` 无总量闸；命中计数对累计集合每轮全量重扫（O(n²)）。
+
+**实施要点**（逐文件清单见规则文档 `.codebuddy/rules/svn-enhance-merge.mdc` 的第四轮节）：
+
+- 删除 `ui/RevRangeDialog.kt` 与 `LogFilter.revFrom`/`revTo`/`hasRevisionRange()`；
+- `LogPageLoader.loadNextPageRaw(size, generation)` 不再需要 filter（删 `revFrom` 下界早停），`reset()` 不再需要参数；
+- 删除 `runExtendSearch` 与 `SEARCH_MATCH_TARGET` / `MAX_SEARCH_ROUNDS` / `MAX_SEARCH_TOTAL_RAW`；
+- **过滤移到后台线程**（EDT 只 `setItems`），过滤结果用 `reloadToken` 校验；
+- 加载/搜索任务**互斥取消**（`ProgressIndicator.cancel()`），`loadedAll` 改 `CopyOnWriteArrayList`；
+- `loadedAll` 总量闸 `MAX_LOADED_ALL` + 状态栏触顶提示；`tokenize` 结果缓存到 filter 实例；
+- 新增状态栏文案：`status.search.partial`（已加载 N 条中匹配 M 条，可点「+100」继续）、`status.load.limit`。
+
+**行为变化**：搜索零请求（TSVN 同款行为）；深历史不再"自动"可搜，需用户显式加载更多；
+版本区间入口消失；日期区间行为不变。
 
 ### 5.5 合并执行（复用原版执行链）
 
@@ -579,8 +594,9 @@ getBundle(base, Locale.ROOT,    loader, control) -> 返回基包     ← 只有 
 | T2 | 图2 | `MergeFlow` 接 `SelectBranchPopup` + `MergeContext` 构造 + 自身合并守卫 | 弹窗与原版逐项一致；选中分支后进入图3 |
 | T3 | 图3 | `MergeVariantDialog`（Revision Select + Cancel） | 只有 2 个按钮，描述文案正确 |
 | T4 | 图4-列表 | `RevisionSelectDialog` 重写（TableView+renderer+QuantitySelection+CommittedChangesBrowser+Splitter） | 首屏有数据、勾选/全选/空格切换正常、右侧路径随选中变化 |
-| T5 | 图4-分页 | `LogPageLoader`（模式 B 游标分页）+ 首屏 `settings.pageSize`（默认 100）+ "加载更多" + 循环补页 | 首屏耗时 < 1s；翻页游标正确、到底后按钮置灰 |
-| T6 | 图4-过滤 | `LogFilterPanel` + `LogFilter` + 防抖重查 + **模式 A 日期模式** | 6 类条件单独/组合正确；改条件后从 HEAD 重查；**日期与版本并存时先日期后版本**；状态栏数字正确 |
+| T5 | 图4-分页 | `LogPageLoader`（**游标单通道**分页）+ 首屏 `settings.pageSize`（默认 100）+ "加载更多" + 循环补页 | 首屏耗时 < 1s；翻页游标正确、到底后按钮置灰 |
+| T6 | 图4-过滤 | `LogFilterPanel` + `LogFilter` + 防抖**重过滤**（**零远端请求**）+ 日期区间（纯客户端） | 5 类条件单独/组合正确；改条件只重过滤已加载集合、不重查服务器；状态栏数字正确 |
+| T6' | 图4-第四轮 | 删除版本区间（`RevRangeDialog` + `revFrom`/`revTo`）；搜索只搜已加载集合（删 `runExtendSearch`）；过滤移到后台线程；任务互斥取消；`loadedAll` 总量闸 | 连续输入 10 个字符 → svn 请求数 0、界面不冻结；深历史需手动「+100 / 全部显示」 |
 | T7 | 合并执行 | `MergeExecutor`（SvnIntegrateChangesTask） | 选中 3 条不连续修订能正确合并；冲突能弹解决器；Local Changes 刷新 |
 | T7 | 合并执行 | `MergeExecutor`（SvnIntegrateChangesTask）+ `LocalChangesPromptTask` 前置 | 选中 3 条不连续修订能正确合并；冲突能弹解决器；Local Changes 刷新；合并前本地改动提示与原版一致 |
 | T8 | 图4-合并状态 | `MergeChecker` + `ListMergeStatus` 状态图标、`[Already merged]` 文件标记、快速搜索、diff 快捷键 | 图标语义与原版一致；已合并项仍可勾选；右栏已合并文件有标记 |

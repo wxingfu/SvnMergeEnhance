@@ -21,16 +21,13 @@ import org.jetbrains.idea.svn.integrate.MergeContext
  *
  * ## 版本区间
  *
- * - 「版本 到」([LogFilter.revTo]) → 起始游标 `revTo + 1`
- *   （原版 `MergeCalculatorTask.loadChangeLists` 会**排除**与 `beforeRevision` 相等的修订号，故必须 +1）；
- * - 「版本 从」([LogFilter.revFrom]) → 客户端过滤，扫描到 `number < revFrom` 时判定到底（早停），
- *   避免一路扫到 r1。
- *
- * 客户端过滤可能让一页命中不足，故自动循环补页，最多 [MAX_BATCHES] 批。
+ * ⚠️ 版本区间维度已整体删除（2026-10-20 第四轮，用户决策「不需要版本区间」）：
+ * 原先的「版本 到 → 起始游标 `revTo + 1`」与「版本 从 → 客户端早停」随之移除，
+ * 游标恒从 HEAD 开始（`-1`）向后翻页。
  *
  * ## 世代号（generation）
  *
- * 过滤条件变化时对话框会调用 [reset]，它会递增世代号。所有加载调用都必须带上
+ * 重新开始加载时（[reset]）对话框会调用它，它会递增世代号。所有加载调用都必须带上
  * **调用时刻**的世代号（[snapshot]）；一旦 [reset] 发生，在飞的后台任务下一轮立即返回空并退出，
  * 从而杜绝"旧任务把旧条件的数据写进新缓冲"这类串数据（纯 token 校验挡不住这一层：
  * token 只能阻止回调写回，阻止不了 loader 内部状态被旧任务污染）。
@@ -78,17 +75,14 @@ class LogPageLoader(
     fun snapshot(): Long = generation
 
     /**
-     * 重置加载状态。
+     * 重置加载状态：游标回到 HEAD、世代号递增（作废在飞任务）。
      *
-     * 只需在**版本区间变化**时调用（那是唯一会改变"该向服务端要哪一段"的条件）；
-     * 搜索词/日期变化只需在内存里重过滤，见对话框的 `applyFilterToModel()`。
+     * 只在**重新开始加载**时调用（`Refresh`：清空已加载集合并从 HEAD 重查第一页）。
+     * 搜索词/日期区间变化**不**调用它们——那两个维度是纯客户端过滤，不需要重新查询。
      */
-    fun reset(filter: LogFilter) {
+    fun reset() {
         generation++
-        // 区间非法（from > to，理论上 UI 已拦）时退回"从 HEAD 开始"，避免游标落在下界之下
-        // 导致首屏直接被判到底、看起来像"没有匹配"。
-        val invalid = filter.revFrom != null && filter.revTo != null && filter.revFrom > filter.revTo
-        cursor = if (invalid) -1L else filter.revTo?.plus(1) ?: -1L
+        cursor = -1L
         allLoaded = false
     }
 
@@ -98,13 +92,12 @@ class LogPageLoader(
      * @param expectedGeneration 调用时刻的世代号（[snapshot]）；与当前不一致说明期间发生了 [reset]，
      *   本次调用直接返回空，调用方应据此放弃本轮工作。
      */
-    fun loadNextPageRaw(filter: LogFilter, pageSize: Int, expectedGeneration: Long): List<SvnChangeList> {
+    fun loadNextPageRaw(pageSize: Int, expectedGeneration: Long): List<SvnChangeList> {
         if (expectedGeneration != generation) return emptyList()
-        return loadByCursorRaw(filter, pageSize, expectedGeneration)
+        return loadByCursorRaw(pageSize, expectedGeneration)
     }
 
     private fun loadByCursorRaw(
-        filter: LogFilter,
         pageSize: Int,
         expectedGeneration: Long,
     ): List<SvnChangeList> {
@@ -112,7 +105,7 @@ class LogPageLoader(
         val raw = ArrayList<SvnChangeList>()
         var batches = 0
         while (raw.size < pageSize && !allLoaded && batches < MAX_BATCHES) {
-            // 每轮检查一次世代号：reset 发生后立即停止，避免把旧条件的数据继续塞进来
+            // 每轮检查一次世代号：reset 发生后立即停止，避免把旧数据继续塞进来
             if (expectedGeneration != generation) return raw
             batches++
             val result = cursorSource?.invoke(cursor, pageSize)
@@ -124,16 +117,7 @@ class LogPageLoader(
             }
             cursor = page.last().number
             allLoaded = result.second && page.size < pageSize
-            val lowerBound = filter.revFrom
-            var reachedLowerBound = false
-            for (item in page) {
-                if (lowerBound != null && item.number < lowerBound) {
-                    reachedLowerBound = true
-                    break
-                }
-                raw.add(item)
-            }
-            if (reachedLowerBound) allLoaded = true
+            raw.addAll(page)
         }
         return raw
     }
@@ -153,9 +137,9 @@ class LogPageLoader(
         /**
          * 单次翻页最多补几批原始数据（防止极端情况下无休止扫描）。
          *
-         * 为什么必须设上限：过滤条件很窄时（例如只匹配 1 条），每一批 100 条原始数据可能
-         * 只产出 0–1 条命中；不设上限会一路扫到 r1，把"没有匹配"变成一次全仓库遍历。
-         * 10 批 × 100 条 = 最多扫 1000 条原始日志，是可接受的最坏情况。
+         * 为什么必须设上限：服务端单批可能只返回很少几条（分支上匹配项稀疏），
+         * 不设上限会一路向后翻，把"取一页"变成一次长扫描。
+         * 10 批 × pageSize 是可接受的最坏情况。
          */
         const val MAX_BATCHES = 10
     }

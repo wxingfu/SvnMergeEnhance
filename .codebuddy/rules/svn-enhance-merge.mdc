@@ -279,8 +279,8 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   `checkList()` 在后台写、`getNotMergedPaths()` 在 EDT 读。故 `prepare()` / `checkList()` /
   `getNotMergedPaths()` 必须走同一个 `mergeCheckerLock`；`checkList` 要**逐行加锁**（锁整批会让
   EDT 等几百行算完而卡 UI），EDT 侧在 `mergeCheckerPrepared == false` 时直接返回空、不进锁
-  （否则要等一次 svn 调用冻住界面）。原版只有一个后台任务在算，本插件首屏 / +N / 搜索扩充
-  会并发起多个，风险比原版更高。
+  （否则要等一次 svn 调用冻住界面）。原版只有一个后台任务在算，本插件首屏 / +N /
+  全部显示会并发起多个，风险比原版更高（⚠️ 第四轮删除「搜索扩充」后并发源少一个）。
 - 按键消费（`e.consume()`）必须写在 `keyPressed`——写在 `keyReleased` 不起作用。
 - 纯图标按钮必须给 `accessibleContext.accessibleName`（官方无障碍要求）。
 
@@ -292,13 +292,86 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 实际类清单：
 
 - `wcinfo/WcInfoLinkInjector`（入口 `StartupActivity.DumbAware`，内含 private `LinkInstaller`）、`EnhanceMergeAction`（普通类）、`EnhanceMergeBundle`
-- `flow/MergeFlow`、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`、`ui/LogFilterPanel`、`ui/RevRangeDialog`
+- `flow/MergeFlow`、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`、`ui/LogFilterPanel`（`ui/RevRangeDialog` 已于第四轮删除）
 - `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`
 - `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
 
-单测：`LogFilterTest`(24) + `LogPageLoaderTest`(15) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3)
-+ `BundleKeysTest`(4) + `EnhanceMergeSettingsTest`(8) = **63**。
+单测：`LogFilterTest`(24) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3)
++ `BundleKeysTest`(4) + `EnhanceMergeSettingsTest`(8) = **60**（第四轮后；此前为 63）。
 （旧文档里的 12 / 53 / 55 均已落后，以 63 为准。）
+
+### 2026-10-20 搜索只搜「已加载」+ 删除版本区间（第四轮 · **已实施**）
+
+> **状态**：**已实施**（2026-10-20）。本节是**决策 + 实施记录**，代码已落地，
+> `README.md` / `CHANGELOG.md` / `plan.md` / `spec.md` / `tasks.md` / `checklist.md` 均已同步。
+
+#### 用户决策（三条，勿再反复讨论）
+
+1. **搜索不再自动加载「不在当前页」的 Log**——但**不是不加载**：搜索是**纯客户端过滤**，
+   作用于**当前已加载集合**（首屏 + 用户手动「+100 / +500 / 全部显示」加载到的部分）。
+   命中不足时**不自动**向服务器请求，改为在状态栏提示，用户自行决定是否加载更多；
+   加载更多后搜索结果自动重算（集合变大 → 命中变多）。
+2. **版本区间功能不需要** → **整体删除**（不是隐藏、不是降级、不是挪位置）。
+3. 方案与实施清单落到相关文档（规则文档 / plan / spec / tasks / checklist），**代码待方案确认后再动**。
+
+#### 决策 1 的依据：现状为何会卡（分析结论）
+
+TortoiseSVN 的 `LogDlg` 里，**搜索/过滤从不触发服务器请求**：`m_filter` 只作用于
+`m_logEntries`（内存缓存集合），只有 `OnClickedNext`(+100) / `OnBnClickedShowAll` 才向服务器要更多，
+且**必须用户显式点击**；命中不足时**不会**去请求。
+
+本插件第三轮之前（及之后）多了一条 TSVN 没有的路径：`onFilterChanged()` 在
+`model.rowCount < SEARCH_MATCH_TARGET`(100) 时启动 `runExtendSearch`，后台向后扫描至多
+`MAX_SEARCH_ROUNDS`(200) 轮 / `MAX_SEARCH_TOTAL_RAW`(20000) 条原始修订。三条放大路径叠加：
+
+| # | 放大路径 | 后果 |
+|---|---|---|
+| ① | **命中判定含日期区间**：`collected.count { filter.matches(it) }` 把**客户端**日期条件算进命中数 → 用户一收窄日期，命中数长期为 0 → 必然扫到 20000 上限 | 请求量最大化 |
+| ② | **旧扫描任务不取消**：`reloadToken` 只丢弃**回调结果**，后台 `run()` 循环照跑；全项目 `indicator.cancel()` **零处调用**。每个任务还**共享同一个 `loader`**（互抢 `cursor`/`allLoaded`） | 每敲一个字符叠一个并发扫描；IME 拼音一次词叠 5~10 个；请求量成倍放大 |
+| ③ | **EDT 上全量过滤**：`applyFilterToModel()` 在 EDT 执行 `loadedAll.filter { matches(it) }`，每条要拼「提交说明 + 全部变更路径 + 作者 + 日期 + 版本号」+ 可能跑 Bug-ID 正则 + 整串 `lowercase()` | 2 万条 ≈ **EDT 冻结 0.4~1 秒**；多轮累积到 5~10 万条 → **数秒到十几秒**界面无响应（这才是用户感知的"卡死"，后台慢只是慢） |
+
+外加：④ `loadedAll` **无总量闸**（`MAX_SEARCH_TOTAL_RAW` 只限单次搜索，跨「搜索 / +N / 全部显示」无上限累积，每条还带全部变更路径）；⑤ 命中计数是 `collected.count{}` 对累计集合**每轮全量重扫**（O(n²)）。
+
+#### 实施清单（第四轮，逐文件 · 已完成）
+
+| 文件 | 改动 |
+|---|---|
+| `ui/RevRangeDialog.kt` | ✅ **已删除**整个文件 |
+| `log/LogFilter.kt` | ✅ 删 `revFrom` / `revTo` / `hasRevisionRange()`；**新增 `matchesText(list)`**（只按文本、跳过版本与日期）；`tokenize` 结果**缓存**到实例（`by lazy`，原先每判定一条都重新分词）；`highlightRanges` 改用同一份缓存 token（顺带修掉「搜 `!abc` 时高亮按 `!abc`、实际匹配按 `abc`」的不一致） |
+| `log/LogPageLoader.kt` | ✅ `loadNextPageRaw(filter, size, generation)` → **`loadNextPageRaw(size, generation)`**（删掉 `revFrom` 下界早停后不再需要 filter）；`reset(filter)` → **`reset()`**（游标恒从 HEAD 开始，`generation` 递增作废在飞任务） |
+| `ui/RevisionSelectDialog.kt` | ✅ 删 `revFrom`/`revTo` 字段、`revisionRangeAction`、`showRevRangeDialog()`；**删 `runExtendSearch`** 与 `SEARCH_MATCH_TARGET` / `MAX_SEARCH_ROUNDS` / `MAX_SEARCH_TOTAL_RAW`；`applyFilterToModel()` 改为**后台线程过滤**（EDT 只 `setItems`）；新增 `MAX_LOADED_ALL` 总量闸 + 触顶提示；加载/搜索任务**互斥取消**（`ProgressIndicator.cancel()`）；`loadedAll` 改 `CopyOnWriteArrayList`（后台读 + EDT 写） |
+| `ui/LogFilterPanel.kt` | ✅ `buildFilter()` 不再透传 `revFrom`/`revTo` |
+| `flow/MergeFlow.kt` | ✅ 首屏调用改 `loader.loadNextPageRaw(pageSize, loader.snapshot())` |
+| `messages/*.properties` | ✅ 删 `action.revision.range` / `action.revision.range.desc` / `revrange.*`；**新增** `status.search.partial`（已加载 N 条中匹配 M 条，提示可点「+100」继续）与 `status.load.limit`（已达加载上限） |
+| 单测 | ✅ `LogFilterTest` 删版本区间形态用例、加 `matchesText`（忽略日期/版本）用例；`LogPageLoaderTest` 删 `revTo+1` 边界 / `revFrom` 早停用例；用例总数会从 63 下降，**实施后须同步本文档与 README 的数字** |
+
+#### 行为变化（用户可感知）
+
+| | 现在（HEAD） | 第四轮之后 |
+|---|---|---|
+| 搜索 | 内存重过滤 + **命中不足自动向服务器扫 ≤20000 条** | 内存重过滤，**零请求**；不足时状态栏提示，用户手动加载更多 |
+| 加载更多 | 「+100/+500/全部显示」继续翻页 | **不变**（用户显式动作照常向服务器请求） |
+| 版本区间 | 工具栏「版本区间…」对话框 | **已删除** |
+| 日期区间 | 纯客户端过滤、默认开启、值=已加载数据范围 | **不变** |
+| 界面响应 | 大仓库下输入即冻结 | 过滤在后台线程，EDT 不阻塞 |
+
+**取舍**：深历史内容不再「自动」可搜——但这正是 TSVN 的行为，且用户有显式手段
+（「全部显示」加载更多，或删掉版本区间后从 HEAD 一路翻）可达。
+
+#### 已同步的文档（第四轮实施时一并完成）
+
+| 文档 | 需改内容 |
+|---|---|
+| `README.md` | ✅ 能力表删「版本区间」行；日期区间行改为「纯客户端过滤」；搜索行改为「只过滤已加载集合」；架构表删「模式 A/B」双模式改为「游标单通道」；文件树删 `ui/RevRangeDialog.kt`；测试类清单与数字同步 |
+| `CHANGELOG.md` | ✅ 「变更」节新增「第四轮」条目（搜索只搜已加载 / 删版本区间 / 过滤后台化 / 任务互斥取消 / 总量闸 / 令牌分离） |
+| 本规则文档 | ✅ 第四轮节标记为「已实施」；实际类清单删 `ui/RevRangeDialog`；单测数字同步 |
+| plan.md / spec.md / `tasks.md` / checklist.md | ✅ 已更新（第四轮节 / T6' 任务项 / R7' 验收块），实施后把勾选项打上 |
+
+#### 验证结果（2026-10-20）
+
+- `gradlew clean test buildPlugin` → **60 用例 0 失败**（63 → 60：删 3 个版本区间用例，加 3 个 `matchesText` / 取反高亮一致性用例）；产物字节码仍为 **major 55**（2022.1 硬约束）。
+- `gradlew verifyOnIde -PideaVersion=2022.1` → **PASS（0 issues）**。
+- 手工：≥5 万条仓库里连续输入 10 个字符 → svn 请求数应为 **0**（仅首屏那一次）、界面无冻结。
 
 ### 2026-10-20 过滤/查询解耦重构（对齐 TortoiseSVN，第三轮）
 
@@ -323,10 +396,10 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 
 | 项 | 处理 |
 |---|---|
-| **1 删搜索框的版本区间语法** | 删除 `LogFilter.looksLikeRevisionRange` / `revisionRange()` / `parseRevRangeInput`；版本区间改为显式字段 `revFrom`/`revTo`，搜索框只做文本匹配（`LogFilterTest` 新增「`2026-10` 恒按文本处理」用例钉住） |
+| **1 删搜索框的版本区间语法** | 删除 `LogFilter.looksLikeRevisionRange` / `revisionRange()` / `parseRevRangeInput`；版本区间改为显式字段 `revFrom`/`revTo`，搜索框只做文本匹配（`LogFilterTest` 新增「`2026-10` 恒按文本处理」用例钉住）。⚠️ **第四轮已把 `revFrom`/`revTo` 整体删除**（用户不需要版本区间），搜索框从此只做纯文本匹配 |
 | **2 删日期查询通道** | `LogPageLoader` 只剩游标单通道（`loadNextPageRaw(filter, size, generation)`）；删除模式 A / `fetchByDateRange` / `dateRangeSource` / 测试专用 `loadNextPage`。新增**世代号**（`snapshot()`/`reset()` 递增）：在飞任务一旦发现世代号变了立即退出，杜绝旧条件的数据串进新缓冲（token 只能挡回调写回，挡不住 loader 内部被污染） |
 | **3 日期默认值对齐 TSVN** | 开关**默认开启**（`LOGFILTER_ALL`）；起止值 = **已加载数据**的 min/max；日历**可选范围**锁在数据范围内（`setDateRangeLimits`，等价 TSVN 的 `SetRange`），从交互上杜绝"日历里有这一天、日志里却没有"。新增 `dateRangeTouched`：用户手动改过日期后，加载更多**不再**覆盖其选择（未改过则跟随数据范围——否则新加载的更早条目会被日期过滤整批抹掉） |
-| **4 独立版本区间对话框** | 新增 `ui/RevRangeDialog`（两个独立输入框，各接受单个修订号或空，语义=TortoiseSVN 的 Show range）+ 工具栏「版本区间…」动作。**只有它**会改变向服务端请求的范围（→ `loader.reset` + 清空全集 + 重拉首屏） |
+| **4 独立版本区间对话框** | 新增 `ui/RevRangeDialog`（两个独立输入框，各接受单个修订号或空，语义=TortoiseSVN 的 Show range）+ 工具栏「版本区间…」动作。**只有它**会改变向服务端请求的范围（→ `loader.reset` + 清空全集 + 重拉首屏）。⚠️ **第四轮已整体删除**（用户决策：不需要版本区间），`loader.reset()` 仅保留给 `Refresh` 用 |
 | **5 X 按钮只清搜索词** | `LogFilterPanel.reset()` → `clearSearchText()`：不动日期区间、By 选择、大小写/正则开关，也不触发全量重拉 |
 
 **顺带修掉的并发/一致性缺陷**：`currentFilter` 加 `@Volatile`；`loadMore`/`loadAll` 接入

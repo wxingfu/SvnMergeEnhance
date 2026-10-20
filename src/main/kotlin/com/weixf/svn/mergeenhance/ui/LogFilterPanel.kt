@@ -430,12 +430,17 @@ class LogFilterPanel(
     /**
      * 由界面状态构建过滤条件。
      *
-     * @param revFrom 版本区间下界（来自独立的「版本区间」对话框）。**由调用方传入而非本类持有**：
-     *   版本区间决定"去服务端取哪一段"（见 [LogPageLoader]），与过滤栏是两个正交维度，
-     *   放进过滤栏会让两者再次纠缠——那正是"改搜索词隐式切换查询通道"的根因。
-     * @param revTo 版本区间上界。
+     * 只有**纯客户端**的两个维度（搜索文本、日期区间）——它们都只影响"已加载数据的可见子集"，
+     * 不影响向服务端请求的范围（版本区间维度已整体删除，见第四轮决策）。
      */
-    fun buildFilter(revFrom: Long?, revTo: Long?): LogFilter {
+    /**
+     * 汇总当前过滤栏状态。
+     *
+     * 不再接受版本区间参数：版本区间维度已整体删除（2026-10-20 第四轮）。
+     * 剩下的两个维度（搜索文本、日期区间）**都是纯客户端过滤**，
+     * 不影响"向服务端要哪一段"，因此调用方无需再关心游标范围。
+     */
+    fun buildFilter(): LogFilter {
         val fromD = if (dateRangeEnabled) toDate(fromPicker, false) else null
         val toD = if (dateRangeEnabled) toDate(toPicker, true) else null
         // Bug-ID 正则取自设置（T9）；用户改坏时回退默认值，避免整个过滤失效
@@ -446,8 +451,6 @@ class LogFilterPanel(
             dateRangeEnabled = dateRangeEnabled,
             fromDate = fromD,
             toDate = toD,
-            revFrom = revFrom,
-            revTo = revTo,
             useRegex = useRegex,
             caseSensitive = caseSensitive,
             bugIdPattern = bugId,

@@ -23,7 +23,7 @@ import kotlin.test.assertTrue
  * 「含 `-` 的文本被误判为版本区间」这条就是本测试类先红、再驱动 `looksLikeRevisionRange`
  * 加上"两侧必须为数字"约束的；而该函数最终被**整体删除**（见下面的
  * `search text with a dash is never parsed as a revision range`）：
- * 搜索框只做文本匹配，版本区间改由独立字段承载，才算彻底根治。
+ * 搜索框只做文本匹配（版本区间维度在第四轮已整体删除），才算彻底根治。
  * 日期用固定时间戳（1579084800000L）避免时区/当前时间导致偶发失败。
  */
 class LogFilterTest {
@@ -186,14 +186,6 @@ class LogFilterTest {
         assertFalse(LogFilter(searchText = "10-20").matches(defaultList))
     }
 
-    @Test
-    fun `hasRevisionRange depends only on the explicit fields`() {
-        assertFalse(LogFilter().hasRevisionRange())
-        // 搜索词长得再像区间也不算
-        assertFalse(LogFilter(searchText = "10-20").hasRevisionRange())
-        assertTrue(LogFilter(revFrom = 10L).hasRevisionRange())
-        assertTrue(LogFilter(revTo = 20L).hasRevisionRange())
-    }
 
     // -------------------------------------------------- 日期区间
 
@@ -233,28 +225,7 @@ class LogFilterTest {
 
     // -------------------------------------------------- 版本区间
 
-    @Test
-    fun `revision range bounds are inclusive`() {
-        val list = changeList(number = 30, comment = "x")
-        assertTrue(LogFilter(revFrom = 30L, revTo = 40L).matches(list))
-        assertTrue(LogFilter(revFrom = 10L, revTo = 30L).matches(list))
-        assertTrue(LogFilter(revTo = 30L).matches(list))
-        assertTrue(LogFilter(revFrom = 30L).matches(list))
-        assertFalse(LogFilter(revFrom = 31L).matches(list))
-        assertFalse(LogFilter(revTo = 29L).matches(list))
-    }
 
-    @Test
-    fun `revision range is a hard boundary evaluated before the text`() {
-        // 与 TortoiseSVN 的 CLogDlgFilter::operator() 一致：先硬边界、后文本。
-        // 区间外即使文本完全命中也被排除。
-        val list = changeList(number = 42, comment = "login bug")
-        assertTrue(LogFilter(revFrom = 10L, revTo = 50L, searchText = "login").matches(list))
-        assertFalse(LogFilter(revFrom = 100L, searchText = "login").matches(list))
-        assertFalse(LogFilter(revTo = 41L, searchText = "login").matches(list))
-        // 区间命中但文本不命中 → 仍然排除
-        assertFalse(LogFilter(revFrom = 10L, searchText = "nonexistent").matches(list))
-    }
 
     @Test
     fun `plain number is a text match not a range`() {
@@ -262,6 +233,39 @@ class LogFilterTest {
         assertTrue(LogFilter(searchText = "42").matches(defaultList))
         // 而 43 不在任何字段里
         assertFalse(LogFilter(searchText = "43").matches(defaultList))
+    }
+
+    @Test
+    fun `matchesText ignores the date range while matches does not`() {
+        // 搜索命中判定只看文本：日期区间是**客户端**的显示子集，与"是否匹配搜索词"无关。
+        val narrow = LogFilter(
+            searchText = "login",
+            dateRangeEnabled = true,
+            fromDate = Date(DATE_2020_01_15.time + 86_400_000L),
+            toDate = Date(DATE_2020_01_15.time + 172_800_000L),
+        )
+        // 完整匹配：日期不在区间内 → 不命中
+        assertFalse(narrow.matches(defaultList))
+        // 纯文本匹配：仍然命中（搜索"有没有这个词"与日期无关）
+        assertTrue(narrow.matchesText(defaultList))
+    }
+
+    @Test
+    fun `matchesText honours the negate prefix`() {
+        // 整段 `!` 取反只作用于文本维度
+        val list = changeList(number = 7, comment = "login bug")
+        // `!` 是**整段取反**：含 login → 取反后为 false；不含 missing → 取反后为 true
+        assertFalse(LogFilter(searchText = "!login").matchesText(list))
+        assertTrue(LogFilter(searchText = "!missing").matchesText(list))
+    }
+
+    @Test
+    fun `highlight and matching agree on a negated search`() {
+        // 旧实现里高亮按原始 searchText（含 `!`）分词、匹配按去掉 `!` 的正文分词 → 两者对不上。
+        // 现在统一用同一份 token：高亮应落在 "login" 上，而不是 "!login"。
+        val filter = LogFilter(searchText = "!login")
+        val ranges = filter.highlightRanges("login bug")
+        assertContentEquals(listOf(0 until 5), ranges)
     }
 
     // -------------------------------------------------- 高亮

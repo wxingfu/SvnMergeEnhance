@@ -111,36 +111,61 @@
 
 ## T5 分页实时加载（Spec R4）
 
-- [ ] T5.1 新建 `log/LogPageLoader.kt`：封装 `MergeCalculatorTask.loadChangeLists(ctx, cursor, pageSize)`（游标模式）
-- [ ] T5.2 游标：首屏 `cursor = -1`；每页后 `cursor = 本页最后一条修订号`；
-      若填了「版本 到」则首屏 `cursor = revTo + 1`（`loadChangeLists` 会**排除**与 `beforeRevision` 相等的修订号，故必须 +1）
+- [ ] T5.1 新建 `log/LogPageLoader.kt`：封装 `MergeCalculatorTask.loadChangeLists(ctx, cursor, pageSize)`（**游标单通道**）
+- [ ] T5.2 游标：首屏 `cursor = -1`（恒从 HEAD 开始）；每页后 `cursor = 本页最后一条修订号`
+      （第四轮：删除「版本 到 → `cursor = revTo + 1`」与「版本 从 → 客户端早停」）
 - [ ] T5.3 「加载更多」按钮：追加；`allLoaded` 为真时禁用
 - [ ] T5.4 后台执行：`Task.Backgroundable` + `ProgressIndicator`（可取消）；结果在 EDT 回填
 - [ ] T5.5 删除 `RevisionLogDataSource.kt`、`RevisionItem`
-- [ ] T5.6 **验收**：首屏（默认 30）在 1s 内返回；翻页游标正确不重复不遗漏；到底后按钮禁用
+- [ ] T5.6 **验收**：首屏（默认 100）在 1s 内返回；翻页游标正确不重复不遗漏；到底后按钮禁用
 
-## T6 过滤栏与循环补页（Spec R7 / R4）
+## T6 过滤栏（Spec R7 / R4）
 
-- [x] T6.1 新建 `log/LogFilter.kt`（纯逻辑）：路径 / 作者 / 版本区间 / Bug-ID / 日期区间 / 包含-排除
+> ⚠️ 第四轮（2026-10-20）**作废** T6.3 双模式分流与 T6.4 版本区间（用户决策：不需要版本区间；
+> 日期区间改为纯客户端过滤）。下列已作废条目保留仅为历史可追溯，**勿再按其实现**。
+
+- [x] T6.1 新建 `log/LogFilter.kt`（纯逻辑）：路径 / 作者 / Bug-ID / 日期区间 / 包含-排除
+      （第四轮：删除「版本区间」字段；新增 `matchesText()` 与 `tokenize` 缓存）
 - [x] T6.2 新建 `ui/LogFilterPanel.kt`：两行布局，字段顺序对齐图5；`Reset` 按钮
-- [x] T6.3 **双模式分流**（用户决策：先日期，后版本区间）：
-      - [x] T6.3.1 日期任一已填 → **模式 A**：`SvnCommittedChangesProvider.getCommittedChanges(settings, location, 0)`
-            （内部翻译为 `svn log -r {dateTo}:{dateFrom}`，服务端按日期裁剪，且不带 `-g`），一次拉完后**内存分页**
-      - [x] T6.3.2 日期均空 → **模式 B**：`loadChangeLists` 游标分页 + 循环补页
-      - [x] T6.3.3 日期与版本**不**同时写入 `ChangeBrowserSettings` 同一边界
-            （`createRevision(date, change, default)` 中 date 静默覆盖 change，且会使游标失效 → 死循环翻页）
-- [x] T6.4 版本区间：上界走服务端起始游标 `revTo + 1`；下界走客户端 `number >= revFrom`，
-      扫描到 `< revFrom` 置 `allLoaded = true`（早停）
-- [x] T6.5 防抖重查：每个输入框 `DocumentListener` + 300ms `Timer` → **重置游标、清空列表、从第一页重查**；
-      用 `reloadToken` 防止旧结果覆盖新结果
-- [x] T6.6 循环补页（模式 B）：`loadNextPage()` 内循环取原始页直到匹配数 ≥ pageSize 或 `allLoaded`，最多 10 批
-- [x] T6.7 客户端过滤顺序固定：版本下界/上界 → 路径 → 作者 → Bug-ID → 包含 → 排除
+- [x] T6.3 ~~**双模式分流**（用户决策：先日期，后版本区间）~~ **已作废（第四轮）**
+      - [x] T6.3.1 ~~日期任一已填 → **模式 A**~~ **已作废**：日期不再走服务端查询
+      - [x] T6.3.2 ~~日期均空 → **模式 B**~~ **已作废**：统一为游标单通道
+      - [x] T6.3.3 日期与版本不同时写入 `ChangeBrowserSettings` 同一边界 **已作废**（版本维度已删）
+- [x] T6.4 ~~版本区间：上界走服务端起始游标 `revTo + 1`；下界走客户端 `number >= revFrom`~~ **已作废（第四轮）**
+- [x] T6.5 防抖：每个输入框 `DocumentListener` + 300ms `Alarm` → **对已加载集合重过滤**（零远端请求）
+      （第四轮改：不重置游标、不清空列表、不重查服务器）；用 `reloadToken` 防止旧结果覆盖新结果
+- [x] T6.6 循环补页：单次翻页内最多 10 批原始页（保证单次翻页扫描量有限）
+- [x] T6.7 客户端过滤顺序固定：日期区间 → 路径 → 作者 → Bug-ID → 包含 → 排除
+      （第四轮：删除「版本下界/上界」）
 - [x] T6.9 「重置过滤」按钮 + 空结果提示（`status.no.match`）
 - [x] T6.11 修复 `ListTableModel` 只读列表崩溃：`setItems(emptyList())` → `setItems(mutableListOf())`
       （`addRows` 内部 `addAll` 会抛 `UnsupportedOperationException`，已在沙箱复现并修复）
-- [ ] T6.8 模式 A 大结果保护：单次拉取 > 5000 条时提示「结果过多，建议缩小日期范围」（**未实现**，后续补）
-- [ ] T6.12 **验收（需人工）**：6 类条件单独/组合正确；改条件立即重查；日期+版本并存时先日期后版本；
+- [ ] T6.8 ~~模式 A 大结果保护~~ **已作废**（模式 A 已删）
+- [ ] T6.12 **验收（需人工）**：5 类条件单独/组合正确；改条件只重过滤、不重查服务器；
       过滤不丢勾选；空结果有提示
+
+## T6' 第四轮：搜索只搜「已加载」+ 删除版本区间（**已实施**）
+
+> 用户决策（2026-10-20）：① 搜索不再自动加载「不在当前页」的 Log（但不是不加载——只过滤已加载集合，
+> 命中不足时提示用户手动加载更多）；② 版本区间功能不需要，整体删除。
+> 详细分析见 `.codebuddy/rules/svn-enhance-merge.mdc` 第四轮节与 `plan.md` §5.4.4。
+
+- [x] T6'.1 删除 `ui/RevRangeDialog.kt`；删除 `LogFilter.revFrom`/`revTo`/`hasRevisionRange()`；
+      删除工具栏「版本区间…」动作与 `showRevRangeDialog()`；删除 `revrange.*` / `action.revision.range*` 文案
+- [x] T6'.2 `LogPageLoader`：`loadNextPageRaw(size, generation)`（不再需要 filter）、`reset()`（无参，游标恒 -1）；
+      删 `revFrom` 下界早停
+- [x] T6'.3 删除 `runExtendSearch` 与 `SEARCH_MATCH_TARGET` / `MAX_SEARCH_ROUNDS` / `MAX_SEARCH_TOTAL_RAW`；
+      `onFilterChanged` 只做重过滤
+- [x] T6'.4 **过滤移到后台线程**（EDT 只 `setItems`），结果用 `reloadToken` 校验；`loadedAll` 改 `CopyOnWriteArrayList`
+- [x] T6'.5 加载/搜索任务**互斥取消**（`ProgressIndicator.cancel()`），`onThrowable` 忽略 `ProcessCanceledException`
+- [x] T6'.6 `loadedAll` 总量闸 `MAX_LOADED_ALL` + 状态栏触顶提示（`status.load.limit`）；
+      搜索命中不足提示（`status.search.partial`）
+- [x] T6'.7 `LogFilter`：`tokenize` 结果缓存（`by lazy`）；`highlightRanges` 用同一份 token（修 `!` 取反的高亮不一致）
+- [x] T6'.8 单测同步：`LogFilterTest` 删版本区间用例、加 `matchesText` 用例；`LogPageLoaderTest` 删 `revTo+1`/`revFrom` 用例
+- [x] T6'.9 文档同步：`README.md`（删版本区间能力、改搜索描述）、`CHANGELOG.md`（变更节）、
+      规则文档第四轮节标记为「已实施」、本文档与 spec/checklist 勾选
+- [x] T6'.10 **验收**：`gradlew test` / `buildPlugin`（字节码 major 55）/ `verifyOnIde -PideaVersion=2022.1` 全通过；
+      ≥5 万条仓库连续输入 10 个字符 → svn 请求数 0、界面不冻结
 
 ## T7 合并执行（Spec R9）
 
@@ -196,20 +221,20 @@
 
 ## T10 测试、文档与收尾
 
-- [x] T10.1 `LogFilterTest`（**25 用例**）：空条件、单/多词 AND、`-` 排除、`+` 或组、引号短语、`!` 取反、
-      大小写、正则（含非法正则）、Bug-ID 字段（默认/自定义正则）、日期区间含边界、版本区间各形态、
-      含 `-` 文本不被误判为区间、高亮区间、字段选择、`parseRevisionRange`/`looksLikeRevisionRange`
-      > 新增回归用例「text containing a dash is not treated as a revision range」：修复
-      > `looksLikeRevisionRange` 只看"含分隔符"导致 `ABC-123`/`JIRA-77` 被误判为区间、
-      > 解析失败后按"无限制"放行全部修订的缺陷（现要求分隔符两侧为数字或空）。
+- [x] T10.1 `LogFilterTest`（**24 用例**，第四轮后数字会再变）：空条件、单/多词 AND、`-` 排除、`+` 或组、引号短语、`!` 取反、
+      大小写、正则（含非法正则）、Bug-ID 字段（默认/自定义正则）、日期区间含边界、字段选择、高亮区间
+      > 第三轮已删「版本区间各形态 / `parseRevisionRange` / `looksLikeRevisionRange`」相关用例
+      > （搜索框不再解析版本区间）；第四轮再删「版本区间为硬边界」用例，并新增 `matchesText` 用例。
 - [x] T10.2 `QuantitySelectionTest`（**9 用例**）：全不选起点增删清、全选起点排除与恢复、
       再全选、全清；并**固化原版语义** `areAllSelected()` 在 selectAll 起点恒为 `true`
       （`RevisionSelectDialog.selectedChangeLists()` 依赖它走排除集分支）
-- [x] T10.3 `LogPageLoaderTest`（**12 用例**）：日期模式一次拉取 + 内存分页 + 客户端过滤；
-      游标模式推进 / 空响应到底 / 整页保守判定 / `revTo+1` 边界 / `revFrom` 早停 /
-      第一批不足补批 / 过滤后补批 / `MAX_BATCHES` 上限 / `reopenIfExhausted`
-      > 为此把 `LogPageLoader` 的仓库访问抽成 `cursorSource` / `dateRangeSource` 两个可空注入点
-      > （默认仍走原版 `MergeCalculatorTask` / `SvnCommittedChangesProvider`，行为不变）。
+- [x] T10.3 `LogPageLoaderTest`（**15 用例**，第四轮后数字会再变）：游标单通道推进 / 空响应到底 /
+      整页保守判定 / 第一批不足补批 / `MAX_BATCHES` 上限 / `reopenIfExhausted` /
+      **世代号**（stale 世代号不发包）
+      > 第三轮已删「日期模式一次拉取 + 内存分页」「`revTo+1` 边界」「`revFrom` 早停」用例；
+      > 第四轮再删与版本区间相关的用例。
+      > 为此把 `LogPageLoader` 的仓库访问抽成 `cursorSource` 一个可空注入点
+      > （默认仍走原版 `MergeCalculatorTask`，行为不变）。
 - [x] T10.4 `README.md` 按 v2 重写：新流程图（面板链接 → 分支弹窗 → 方式 → 修订选择 → 原版合并）、
       功能特性表、使用指南、技术实现（复用 API 表 + 两种日志模式 + 合并状态 + 勾选解耦）、
       项目结构（v2 类清单）、设置项、测试（46 用例明细）、回归验证步骤、兼容性说明
