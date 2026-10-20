@@ -101,7 +101,8 @@ object MergeFlow {
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                items = loader.loadNextPageRaw(LogFilter(), EnhanceMergeSettings.getInstance().pageSize)
+                // 首屏：加载器刚创建、世代号即 0，此处不需要任何过滤条件（无版本区间 = 从 HEAD 开始）
+                items = loader.loadNextPageRaw(LogFilter(), EnhanceMergeSettings.getInstance().pageSize, loader.snapshot())
             }
 
             override fun onSuccess() {

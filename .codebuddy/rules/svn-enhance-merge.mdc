@@ -292,13 +292,51 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 实际类清单：
 
 - `wcinfo/WcInfoLinkInjector`（入口 `StartupActivity.DumbAware`，内含 private `LinkInstaller`）、`EnhanceMergeAction`（普通类）、`EnhanceMergeBundle`
-- `flow/MergeFlow`、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`、`ui/LogFilterPanel`
+- `flow/MergeFlow`、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`、`ui/LogFilterPanel`、`ui/RevRangeDialog`
 - `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`
 - `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
 
-单测：`LogFilterTest`(25) + `LogPageLoaderTest`(14) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3)
+单测：`LogFilterTest`(24) + `LogPageLoaderTest`(15) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3)
 + `BundleKeysTest`(4) + `EnhanceMergeSettingsTest`(8) = **63**。
-（`LogPageLoaderTest` 由 12 增至 14 是 R1~R4 时补的，旧文档里的 12 / 53 / 55 均已落后，以 63 为准。）
+（旧文档里的 12 / 53 / 55 均已落后，以 63 为准。）
+
+### 2026-10-20 过滤/查询解耦重构（对齐 TortoiseSVN，第三轮）
+
+> ⚠️ 本节**取代**上一节表格里与过滤相关的描述：`LogFilterPanel.initDateRange()` /
+> `widenDateRangeTo()` / `reset()`、`LogPageLoader.loadNextPage()`（`@VisibleForTesting`）、
+> `LogFilter.looksLikeRevisionRange()` / `revisionRange()` / `parseRevRangeInput()`、
+> 以及"日期区间模式（模式 A）"**均已删除**；`EnhanceMergeSettings.dateRangeEnabledOnOpen()`
+> 的语义从"配了默认范围就强制开启"改为"默认开启 + 沿用用户上次选择"。
+
+**根因**：过滤栏的三个维度原本纠缠在一条通路上——「日期区间」会切换 `LogPageLoader` 的
+**第二条查询通道**（`limit=0` 一次拉完整区间、不带 `-g`、Target 带 peg），而搜索框文本会被
+`looksLikeRevisionRange` 猜成**版本区间**（`2026-10` → `[10, 2026]`）。于是：
+① 打开对话框时「日历开着、列表却未过滤」；② 改一个字符就隐式切换查询通道并清空重拉；
+③ 搜 `2026-10` 恒为空且无任何报错；④ 两种通道请求的**不是同一份数据**（`-g`/peg 差异）。
+
+**TortoiseSVN 的做法**（`LogDlg.cpp` / `LogDlgFilter.cpp`）：服务端查询参数只有
+`m_path/m_pegRev/m_startRev/m_endRev/m_limit/m_bStrict/m_bIncludeMerges` 七个；
+`m_tFrom`/`m_tTo`（日期区间）与搜索词**只写进 `CLogDlgFilter`**，用于 `m_logEntries.Filter(...)`
+内存过滤，**从不**参与查询；版本区间在独立的「Show range」对话框里（`m_startRev`/`m_endRev`）。
+
+**本轮改动**（5 项，全部落地）：
+
+| 项 | 处理 |
+|---|---|
+| **1 删搜索框的版本区间语法** | 删除 `LogFilter.looksLikeRevisionRange` / `revisionRange()` / `parseRevRangeInput`；版本区间改为显式字段 `revFrom`/`revTo`，搜索框只做文本匹配（`LogFilterTest` 新增「`2026-10` 恒按文本处理」用例钉住） |
+| **2 删日期查询通道** | `LogPageLoader` 只剩游标单通道（`loadNextPageRaw(filter, size, generation)`）；删除模式 A / `fetchByDateRange` / `dateRangeSource` / 测试专用 `loadNextPage`。新增**世代号**（`snapshot()`/`reset()` 递增）：在飞任务一旦发现世代号变了立即退出，杜绝旧条件的数据串进新缓冲（token 只能挡回调写回，挡不住 loader 内部被污染） |
+| **3 日期默认值对齐 TSVN** | 开关**默认开启**（`LOGFILTER_ALL`）；起止值 = **已加载数据**的 min/max；日历**可选范围**锁在数据范围内（`setDateRangeLimits`，等价 TSVN 的 `SetRange`），从交互上杜绝"日历里有这一天、日志里却没有"。新增 `dateRangeTouched`：用户手动改过日期后，加载更多**不再**覆盖其选择（未改过则跟随数据范围——否则新加载的更早条目会被日期过滤整批抹掉） |
+| **4 独立版本区间对话框** | 新增 `ui/RevRangeDialog`（两个独立输入框，各接受单个修订号或空，语义=TortoiseSVN 的 Show range）+ 工具栏「版本区间…」动作。**只有它**会改变向服务端请求的范围（→ `loader.reset` + 清空全集 + 重拉首屏） |
+| **5 X 按钮只清搜索词** | `LogFilterPanel.reset()` → `clearSearchText()`：不动日期区间、By 选择、大小写/正则开关，也不触发全量重拉 |
+
+**顺带修掉的并发/一致性缺陷**：`currentFilter` 加 `@Volatile`；`loadMore`/`loadAll` 接入
+`reloadToken` 校验（原先只有 `runExtendSearch` 有）；状态栏版本范围改用 min/max
+（原先依赖"列表严格按修订号降序"这一未言明假设）；区分「加载中」与「无匹配」
+（新增 `status.loading`）；`invokeLater` 全部补 `ModalityState` + 过期条件；
+删除 `widenDateRangeTo`（与 `syncDateRangeToData` 职责重叠）。
+
+**回归**：`test` **63 用例 0 失败**；`buildPlugin` BUILD SUCCESSFUL（Kotlin 编译零告警）；
+产物字节码仍为 **major 55**（2022.1 硬约束）。
 
 ### 2026-10-19 代码审查修复（第二轮；`test` 63 全过 + `buildPlugin` + `verifyOnIde` PASS）
 

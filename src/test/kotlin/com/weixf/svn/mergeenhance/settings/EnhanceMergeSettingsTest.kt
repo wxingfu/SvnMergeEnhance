@@ -20,8 +20,12 @@ import kotlin.test.assertTrue
  * 「默认日期范围（天）> 0」曾经**完全不生效**：对话框只调 `initDateRange()` 填日历，
  * 没打开「日期区间」开关，而过滤栏只在开关打开时才把起止值交给 `LogFilter`，
  * 于是设置项静默失效（界面既看不到日期面板，也不会按日期重拉，且无任何反馈）。
- * 修复后由 [EnhanceMergeSettings.dateRangeEnabledOnOpen] 统一表达"配了默认范围就必须开启"，
- * 下面的 `date range is enabled on open whenever a default range is configured` 即其回归。
+ *
+ * 现在的语义已经变了：日期区间是**纯客户端**过滤（TortoiseSVN 亦然），
+ * 开关默认开启、默认值恒等于已加载数据的日期范围，因此"配了默认范围就必须强制开启"
+ * 这条补丁不再需要——[EnhanceMergeSettings.dateRangeEnabledOnOpen] 只表达
+ * "默认开启 + 沿用用户上次的开关选择"，下面的
+ * `date range is enabled on open by default and follows the last user choice` 即其回归。
  *
  * 本类直接 `new EnhanceMergeSettings()`：只有 `getInstance()` 走平台的 `service()`，
  * 实例本身不依赖 IDE。
@@ -56,18 +60,25 @@ class EnhanceMergeSettingsTest {
     }
 
     @Test
-    fun `date range is enabled on open whenever a default range is configured`() {
+    fun `date range is enabled on open by default and follows the last user choice`() {
         val s = settings()
 
-        // 未配默认范围：沿用上次手动选择的状态
-        s.defaultDateRangeDays = 0
+        // 默认值 true（对齐 TortoiseSVN：日期区间位默认就在 LOGFILTER_ALL 里）。
+        // 安全的前提是日期区间已改为**纯客户端过滤**、且默认值恒等于已加载数据的日期范围。
+        assertEquals(true, s.dateRangeEnabled)
+        assertEquals(true, s.dateRangeEnabledOnOpen())
+
+        // 用户手动关过时，重开对话框尊重该偏好（此时对话框会用过滤栏当前状态构建
+        // currentFilter，控件状态与实际过滤仍然一致）
         assertEquals(false, s.dateRangeEnabledOnOpen(lastUsed = false))
         assertEquals(true, s.dateRangeEnabledOnOpen(lastUsed = true))
 
-        // 配了默认范围：无论上次是否手动关过，打开对话框都必须开启，
-        // 否则起止值会被 buildFilter() 丢弃（这正是曾经的静默失效）
+        // 配了「默认日期范围（天）」时：起止值会被"最近 N 天"覆盖
+        // （LogFilterPanel.applyDefaultDateRange 内部会打开开关），因此这里仍尊重
+        // 用户上次的选择，不需要再像早期实现那样"强制开启"——那条补丁是为了绕开
+        // "日期区间 → 服务端查询通道"的耦合，而该耦合已删除。
         s.defaultDateRangeDays = 30
-        assertEquals(true, s.dateRangeEnabledOnOpen(lastUsed = false))
+        assertEquals(false, s.dateRangeEnabledOnOpen(lastUsed = false))
         assertEquals(true, s.dateRangeEnabledOnOpen(lastUsed = true))
     }
 

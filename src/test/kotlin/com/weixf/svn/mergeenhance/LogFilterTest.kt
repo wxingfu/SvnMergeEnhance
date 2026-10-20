@@ -21,7 +21,10 @@ import kotlin.test.assertTrue
  * 为什么值得为它引入 mockk：过滤语义（分词、AND/OR/NOT、取反、正则、Bug-ID、日期/版本区间）
  * 是 TortoiseSVN 兼容性的核心，且**已被真实缺陷验证过**——
  * 「含 `-` 的文本被误判为版本区间」这条就是本测试类先红、再驱动 `looksLikeRevisionRange`
- * 加上"两侧必须为数字"约束的。日期用固定时间戳（1579084800000L）避免时区/当前时间导致偶发失败。
+ * 加上"两侧必须为数字"约束的；而该函数最终被**整体删除**（见下面的
+ * `search text with a dash is never parsed as a revision range`）：
+ * 搜索框只做文本匹配，版本区间改由独立字段承载，才算彻底根治。
+ * 日期用固定时间戳（1579084800000L）避免时区/当前时间导致偶发失败。
  */
 class LogFilterTest {
 
@@ -168,17 +171,28 @@ class LogFilterTest {
     }
 
     @Test
-    fun `text containing a dash is not treated as a revision range`() {
-        // "ABC-123" 含 '-'，但两侧不是纯数字 → 普通文本（T10 暴露的缺陷修复）
-        assertFalse(LogFilter.looksLikeRevisionRange("ABC-123"))
-        assertFalse(LogFilter.looksLikeRevisionRange("jira-77"))
-        assertFalse(LogFilter.looksLikeRevisionRange("XYZ-\\d+"))
-        // 真正的区间仍可识别
-        assertTrue(LogFilter.looksLikeRevisionRange("10-20"))
-        assertTrue(LogFilter.looksLikeRevisionRange("10-"))
-        assertTrue(LogFilter.looksLikeRevisionRange("-20"))
-        // 含空格的复合词也不算区间
-        assertFalse(LogFilter.looksLikeRevisionRange("fix bug ABC-123"))
+    fun `search text with a dash is never parsed as a revision range`() {
+        // "2026-10" 的本意是搜 2026 年 10 月。旧实现按"两侧是数字"把它当成版本区间 [10, 2026]，
+        // 而版本区间会改写服务端游标 → 用户得到一个**空列表且没有任何报错**。
+        // 现在搜索框只做文本匹配（对齐 TortoiseSVN：其搜索框里修订号也只是普通文本）。
+        val list = changeList(number = 20261001, comment = "2026-10 release")
+        assertTrue(LogFilter(searchText = "2026-10").matches(list))
+        // 反证：只是文本不命中，不会因为"长得像区间"而被放行
+        assertFalse(LogFilter(searchText = "2026-11").matches(list))
+        // 含 '-' 的普通文本（Bug-ID 形态）同样按文本处理
+        assertTrue(LogFilter(searchText = "ABC-123").matches(defaultList))
+        assertFalse(LogFilter(searchText = "ABC-124").matches(defaultList))
+        // 区间写法 "10-20" 现在也只是普通文本：combined 里没有这个子串 → 不命中
+        assertFalse(LogFilter(searchText = "10-20").matches(defaultList))
+    }
+
+    @Test
+    fun `hasRevisionRange depends only on the explicit fields`() {
+        assertFalse(LogFilter().hasRevisionRange())
+        // 搜索词长得再像区间也不算
+        assertFalse(LogFilter(searchText = "10-20").hasRevisionRange())
+        assertTrue(LogFilter(revFrom = 10L).hasRevisionRange())
+        assertTrue(LogFilter(revTo = 20L).hasRevisionRange())
     }
 
     // -------------------------------------------------- 日期区间
@@ -220,20 +234,26 @@ class LogFilterTest {
     // -------------------------------------------------- 版本区间
 
     @Test
-    fun `revision range variants`() {
-        val list = changeList(number = 25, comment = "x")
-        assertTrue(LogFilter(searchText = "10-30").matches(list))
-        assertTrue(LogFilter(searchText = "10:").matches(list))
-        assertTrue(LogFilter(searchText = "-30").matches(list))
-        assertTrue(LogFilter(searchText = "25").matches(list))
-        assertFalse(LogFilter(searchText = "30-40").matches(list))
+    fun `revision range bounds are inclusive`() {
+        val list = changeList(number = 30, comment = "x")
+        assertTrue(LogFilter(revFrom = 30L, revTo = 40L).matches(list))
+        assertTrue(LogFilter(revFrom = 10L, revTo = 30L).matches(list))
+        assertTrue(LogFilter(revTo = 30L).matches(list))
+        assertTrue(LogFilter(revFrom = 30L).matches(list))
+        assertFalse(LogFilter(revFrom = 31L).matches(list))
+        assertFalse(LogFilter(revTo = 29L).matches(list))
     }
 
     @Test
-    fun `revision range bounds are inclusive`() {
-        val list = changeList(number = 30, comment = "x")
-        assertTrue(LogFilter(searchText = "30-40").matches(list))
-        assertTrue(LogFilter(searchText = "10-30").matches(list))
+    fun `revision range is a hard boundary evaluated before the text`() {
+        // 与 TortoiseSVN 的 CLogDlgFilter::operator() 一致：先硬边界、后文本。
+        // 区间外即使文本完全命中也被排除。
+        val list = changeList(number = 42, comment = "login bug")
+        assertTrue(LogFilter(revFrom = 10L, revTo = 50L, searchText = "login").matches(list))
+        assertFalse(LogFilter(revFrom = 100L, searchText = "login").matches(list))
+        assertFalse(LogFilter(revTo = 41L, searchText = "login").matches(list))
+        // 区间命中但文本不命中 → 仍然排除
+        assertFalse(LogFilter(revFrom = 10L, searchText = "nonexistent").matches(list))
     }
 
     @Test
@@ -258,26 +278,6 @@ class LogFilterTest {
         val filter = LogFilter(searchText = "login", fields = setOf(LogFilterField.MESSAGE))
         assertTrue(filter.isFieldMatched(defaultList, LogFilterField.MESSAGE))
         assertFalse(filter.isFieldMatched(defaultList, LogFilterField.AUTHOR))
-    }
-
-    // -------------------------------------------------- 工具方法
-
-    @Test
-    fun `looksLikeRevisionRange detects separators without spaces`() {
-        assertTrue(LogFilter.looksLikeRevisionRange("10-20"))
-        assertTrue(LogFilter.looksLikeRevisionRange("10:20"))
-        assertFalse(LogFilter.looksLikeRevisionRange("10 20"))
-        assertFalse(LogFilter.looksLikeRevisionRange("42"))
-        assertFalse(LogFilter.looksLikeRevisionRange(""))
-    }
-
-    @Test
-    fun `parseRevisionRange parses all forms`() {
-        assertTrue(LogFilter.parseRevisionRange("40") == (40L to null))
-        assertTrue(LogFilter.parseRevisionRange("40-50") == (40L to 50L))
-        assertTrue(LogFilter.parseRevisionRange("40-") == (40L to null))
-        assertTrue(LogFilter.parseRevisionRange("-50") == (null to 50L))
-        assertTrue(LogFilter.parseRevisionRange("") == (null to null))
     }
 
     // -------------------------------------------------- 辅助

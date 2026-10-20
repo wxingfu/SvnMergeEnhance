@@ -34,7 +34,14 @@ class EnhanceMergeSettings : PersistentStateComponent<EnhanceMergeSettings.State
         // ---- 过滤栏「上次使用」的界面状态（关闭对话框后重开仍沿用）----
         /** 勾选的过滤字段（存 [com.weixf.svn.mergeenhance.log.LogFilterField.id]）；为空表示用默认全选。 */
         var filterFields: MutableList<String> = mutableListOf(),
-        var dateRangeEnabled: Boolean = false,
+        /**
+         * 「日期区间」开关的**上次使用**状态。
+         *
+         * 默认 **true**（对齐 TortoiseSVN：`m_selectedFilters(LOGFILTER_ALL)` 里日期区间位默认就是开的）。
+         * 因为日期区间已是纯客户端过滤、且默认值恒等于"已加载数据的日期范围"，
+         * 默认开启不会收缩结果集，却能让"开关状态"与"实际过滤"天生一致。
+         */
+        var dateRangeEnabled: Boolean = true,
         var useRegex: Boolean = false,
         var caseSensitive: Boolean = false,
     )
@@ -128,20 +135,21 @@ class EnhanceMergeSettings : PersistentStateComponent<EnhanceMergeSettings.State
     }
 
     /**
-     * 打开修订选择对话框时「日期区间」开关的初始值。
+     * 打开修订选择对话框时「日期区间」开关的初始值：**默认开启**（对齐 TortoiseSVN——
+     * 它的日期区间位默认就在 `LOGFILTER_ALL` 里），之后沿用用户上次的开关选择。
      *
-     * 为什么需要这个判定（曾经踩过的坑）：设置里的「默认日期范围（天）> 0」要求"打开就按最近 N 天
-     * 过滤"，而过滤栏只在开关为 true 时才把日历里的起止值交给过滤条件（见
-     * `LogFilterPanel.buildFilter()`）。早期实现只调用 `initDateRange()` 填日历、没打开开关，
-     * 于是该设置项**完全不生效**——界面既看不到日期面板，也不会按日期重拉，且没有任何反馈。
-     * 判定收敛成纯函数，由单测钉住（构造函数不需要 IDE 实例，可直接 new 出来测）。
+     * 为什么"默认开启"是安全的：日期区间只做**客户端**过滤，且起止默认值恒等于"已加载数据的
+     * 日期范围"，所以开着等于不收缩；而一旦用户主动缩小过区间，对话框初始化时
+     * [com.weixf.svn.mergeenhance.ui.RevisionSelectDialog] 会用过滤栏的当前状态构建
+     * `currentFilter`，因此**控件状态与实际过滤永远一致**（这正是旧实现"日历开着、列表却没过滤"
+     * 的根因所在——它让 UI 状态与查询条件各走各的）。
      *
-     * 语义：配了默认日期范围 ⇒ 每次打开都开启；否则沿用用户上次手动选择的状态。
+     * 历史上这里需要"配了默认日期范围就必须强制开启"的补丁，是因为日期区间曾与
+     * "是否切换到服务端日期查询"绑定；那条通道已删除，补丁随之消失。
      *
      * @param lastUsed 上次使用时用户手动选择的开关状态（持久化偏好），缺省取当前设置值
      */
-    fun dateRangeEnabledOnOpen(lastUsed: Boolean = state.dateRangeEnabled): Boolean =
-        state.defaultDateRangeDays > 0 || lastUsed
+    fun dateRangeEnabledOnOpen(lastUsed: Boolean = state.dateRangeEnabled): Boolean = lastUsed
 
     // ------------------------------------------------------------ 内部
 

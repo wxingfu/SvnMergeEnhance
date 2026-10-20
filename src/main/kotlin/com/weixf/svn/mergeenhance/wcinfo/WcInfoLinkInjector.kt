@@ -2,6 +2,7 @@ package com.weixf.svn.mergeenhance.wcinfo
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.StartupActivity
@@ -169,7 +170,14 @@ private class LinkInstaller(private val project: Project) : Disposable {
         // 那就等于没清理。项目关闭走 EDT，这里是主路径；非 EDT 时仍走 invokeLater
         // （Swing 组件只能在 EDT 上动）。
         val app = ApplicationManager.getApplication()
-        if (app.isDispatchThread) cleanup.run() else app.invokeLater(cleanup)
+        if (app.isDispatchThread) {
+            cleanup.run()
+        } else {
+            // 官方要求显式带 ModalityState。这里用 `any()`（而不是默认状态）：
+            // 清理动作要在**任何**模态状态下都能跑，否则 IDE 退出阶段残留注入的链接摘不掉。
+            // 刻意**不**加 `project.disposed` 过期条件——项目已关闭时链接同样需要摘除。
+            app.invokeLater(cleanup, ModalityState.any())
+        }
     }
 
     /** 收集"直接包含我们自己的 LinkLabel"的容器。 */
@@ -295,9 +303,14 @@ private class LinkInstaller(private val project: Project) : Disposable {
     }
 
     private fun scheduleEnsure(container: Container) {
-        ApplicationManager.getApplication().invokeLater {
-            if (!project.isDisposed && container.isShowing) ensureLinks(container)
-        }
+        ApplicationManager.getApplication().invokeLater(
+            {
+                if (!project.isDisposed && container.isShowing) ensureLinks(container)
+            },
+            // 官方要求：显式 ModalityState + 过期条件（项目已关闭就不必再注入链接）
+            ModalityState.any(),
+            project.disposed,
+        )
     }
 
     /**

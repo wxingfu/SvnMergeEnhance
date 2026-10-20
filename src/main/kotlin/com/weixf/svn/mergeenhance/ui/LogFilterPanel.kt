@@ -43,10 +43,14 @@ import javax.swing.event.DocumentListener
  * - `By ▾`：紧凑下拉按钮（TortoiseSVN `OnClickedInfoIcon`），弹出勾选项 =
  *   Messages / Paths / Authors / Revisions / Bug-IDs / Date / Date range，分隔线后接
  *   Use regular expressions / Match case；按钮 tooltip 显示当前生效字段。
- * - 搜索框右侧内嵌 **X 按钮**（对齐 TortoiseSVN 过滤条的清除图标）：清空搜索词并把
- *   起止日历重置为当前页范围。
- * - `Date range` 为独立开关：勾选时才显示起止日历（TortoiseSVN `AdjustDateFilterVisibility`），
- *   且默认取当前页最早/最晚日期（`OnClickedCancelFilter` 行为）。
+ * - 搜索框右侧内嵌 **X 按钮**（对齐 TortoiseSVN 过滤条的清除图标）：**只**清空搜索词，
+ *   不动日期区间与 By 选择（对齐 TSVN：它的"取消过滤"也不重置日期控件的值）。
+ * - `Date range` 为独立开关，**默认开启**（对齐 TortoiseSVN 的 `LOGFILTER_ALL`）：
+ *   勾选时才显示起止日历（TortoiseSVN `AdjustDateFilterVisibility`），
+ *   默认值取**已加载数据的**最早/最晚日期（TSVN `LogDlg.cpp:1926-1933` 每次加载后重算），
+ *   且日历的**可选范围**被锁在数据范围内（TSVN 的 `SetRange`），
+ *   从交互上杜绝"日历里有这一天、日志里却没有"的矛盾。
+ *   日期区间是**纯客户端**过滤（TortoiseSVN 亦然），**不会**改变向服务端查询的范围。
  * - 日期控件采用 LGoodDatePicker，配色取自 IDEA 主题；**隐藏其自带的切换按钮**，
  *   改为**点击日期框即弹出日历**，语言跟随 [EnhanceMergeBundle.locale]（与界面一致），
  *   一周起始日固定为**周一**（中国习惯，不随 locale 漂移，见 [createDatePicker]）。
@@ -68,9 +72,12 @@ class LogFilterPanel(
     /**
      * 「日期区间」开关。
      *
-     * 初始值走 [EnhanceMergeSettings.dateRangeEnabledOnOpen] 而不是直接取
-     * `settings.dateRangeEnabled`：配了「默认日期范围（天）> 0」时必须一并打开开关，
-     * 否则 [buildFilter] 会把日历里的起止值丢掉，该设置项静默失效。
+     * 初始值走 [EnhanceMergeSettings.dateRangeEnabledOnOpen]：默认 **true**（对齐 TortoiseSVN
+     * 的 `LOGFILTER_ALL`，日期区间位默认就是开的），之后沿用用户上次的开关选择。
+     *
+     * 之所以"默认开着"不会造成错位：日期区间是**纯客户端**过滤，且起止默认值恒等于
+     * 「已加载数据的日期范围」⇒ 首屏等价于"未过滤"。
+     * 真正会改变服务端查询范围的只有版本区间（独立对话框，见 [RevRangeDialog]）。
      */
     private var dateRangeEnabled: Boolean = settings.dateRangeEnabledOnOpen()
     private var useRegex: Boolean = settings.useRegex
@@ -94,10 +101,10 @@ class LogFilterPanel(
         isRolloverEnabled = true
         margin = JBUI.emptyInsets()
         preferredSize = JBUI.size(20, 20)
-        toolTipText = EnhanceMergeBundle.message("filter.clear")
+        toolTipText = EnhanceMergeBundle.message("filter.clear.search")
         // 官方无障碍要求：纯图标按钮必须给出可读名称，否则屏幕阅读器只会念出 "button"
-        accessibleContext.accessibleName = EnhanceMergeBundle.message("filter.clear")
-        addActionListener { reset() }
+        accessibleContext.accessibleName = EnhanceMergeBundle.message("filter.clear.search")
+        addActionListener { clearSearchText() }
     }
 
     /** 搜索框 = 无边框输入框 + 内嵌 X 按钮，整体套一层与 IDEA 文本框一致的细边框。 */
@@ -132,7 +139,32 @@ class LogFilterPanel(
     private val debounce = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
 
     private var suppressEvents = false
-    private var dateBounds: Pair<Date?, Date?> = null to null
+
+    /**
+     * 日期控件的**可选范围**（已加载数据的 min/max 日期，只扩不收）。
+     *
+     * 为什么要有范围（对齐 TortoiseSVN `LogDlg.cpp:1930` 的 `m_dateFrom.SetRange(&min,&max)`）：
+     * 允许选到"数据之外"的日期，用户就会遇到"日历里明明包含这一天，日志里却没有"的矛盾——
+     * 因为日期区间是**客户端**过滤，超出已加载范围的日子本来就没下载过。
+     * 把可选范围锁在数据范围内，从交互上就消灭了这种自相矛盾（想看更早的数据请先「+100」/「全部显示」）。
+     *
+     * 只扩不收：加载更多之后范围随之放宽，但**不改动用户已选的区间**——
+     * 否则每次「+100」都会把用户精心选的子区间重置成全范围。
+     */
+    private var boundsMin: LocalDate? = null
+    private var boundsMax: LocalDate? = null
+
+    /**
+     * 用户是否**手动**改过起止日期。
+     *
+     * 决定加载更多之后日历的起止值要不要跟着数据范围走：
+     * - 未改过（默认状态）→ 跟随数据范围（对齐 TortoiseSVN `LogDlg.cpp:1926-1927`
+     *   每次加载后无条件用 min/max 覆盖 `m_tFrom`/`m_tTo`）。**这一步是必需的**：
+     *   新加载的条目日期必然更早，若区间仍停在首屏范围，它们会被日期过滤**整批抹掉**，
+     *   表现为"点了 +100 但什么都没多出来"。
+     * - 改过 → 尊重用户选择，只把越界的值夹回可选范围内。
+     */
+    private var dateRangeTouched: Boolean = false
 
     init {
         layout = BorderLayout(JBUI.scale(ITEM_HGAP), 0)
@@ -156,7 +188,13 @@ class LogFilterPanel(
             }
         })
 
-        val dateListener = DateChangeListener { onInputChanged() }
+        val dateListener = DateChangeListener {
+            // 记录"用户手动改过日期"：此后加载更多就不再自动把区间重设为数据范围
+            // （否则用户精心选的子区间会被每次「+100」重置掉）。
+            // 程序化赋值（syncDateRangeToData / applyDefaultDateRange）走 suppressEvents，不会置此标志。
+            if (!suppressEvents) dateRangeTouched = true
+            onInputChanged()
+        }
         fromPicker.addDateChangeListener(dateListener)
         toPicker.addDateChangeListener(dateListener)
 
@@ -389,8 +427,15 @@ class LogFilterPanel(
         menu.show(anchor, 0, anchor.height)
     }
 
-    /** 由界面状态构建过滤条件（日期区间仅在 `dateRangeEnabled` 时生效）。 */
-    fun buildFilter(): LogFilter {
+    /**
+     * 由界面状态构建过滤条件。
+     *
+     * @param revFrom 版本区间下界（来自独立的「版本区间」对话框）。**由调用方传入而非本类持有**：
+     *   版本区间决定"去服务端取哪一段"（见 [LogPageLoader]），与过滤栏是两个正交维度，
+     *   放进过滤栏会让两者再次纠缠——那正是"改搜索词隐式切换查询通道"的根因。
+     * @param revTo 版本区间上界。
+     */
+    fun buildFilter(revFrom: Long?, revTo: Long?): LogFilter {
         val fromD = if (dateRangeEnabled) toDate(fromPicker, false) else null
         val toD = if (dateRangeEnabled) toDate(toPicker, true) else null
         // Bug-ID 正则取自设置（T9）；用户改坏时回退默认值，避免整个过滤失效
@@ -401,79 +446,118 @@ class LogFilterPanel(
             dateRangeEnabled = dateRangeEnabled,
             fromDate = fromD,
             toDate = toD,
+            revFrom = revFrom,
+            revTo = revTo,
             useRegex = useRegex,
             caseSensitive = caseSensitive,
             bugIdPattern = bugId,
         )
     }
 
-    /** 用当前页日志的最早/最晚日期初始化起止日历（TortoiseSVN 行为；不触发重查）。 */
-    fun initDateRange(min: Date?, max: Date?) {
-        dateBounds = min to max
+    /**
+     * 用**已加载数据**的实际日期范围校准日历：放宽可选范围（[boundsMin]/[boundsMax]），
+     * 并把起止值对齐到该范围。
+     *
+     * 对齐 TortoiseSVN `LogDlg.cpp:1926-1933`（每次加载完成后用数据的 min/max 校准日历
+     * 并 `SetRange` 限制可选范围）。与 TSVN 的差别只有一处，且是**改进**：
+     * TSVN 无条件覆盖用户选好的区间（`m_tFrom = m_logEntries.GetMinDate()`），
+     * 我们只在**用户没手动改过**时跟随（见 [dateRangeTouched]），改过就保留用户的选择。
+     *
+     * @param min 已加载数据的最早提交时间；null 时不做任何事（还没加载到带日期的数据）。
+     * @param max 已加载数据的最晚提交时间。
+     */
+    fun syncDateRangeToData(min: Date?, max: Date?) {
+        val lo = min?.let { toLocalDate(it) } ?: return
+        val hi = max?.let { toLocalDate(it) } ?: return
+        val newMin = listOfNotNull(boundsMin, lo).minOrNull()!!
+        val newMax = listOfNotNull(boundsMax, hi).maxOrNull()!!
+        boundsMin = newMin
+        boundsMax = newMax
         suppressEvents = true
-        setPickers(min, max)
-        suppressEvents = false
+        try {
+            // 可选范围锁在已加载数据内（min>max 时返回 false，忽略即可）
+            fromPicker.settings.setDateRangeLimits(newMin, newMax)
+            toPicker.settings.setDateRangeLimits(newMin, newMax)
+            if (dateRangeTouched) {
+                // 用户自己选过：只把越界的值拉回范围内
+                fromPicker.date = clampToBounds(fromPicker.date, newMin, newMax)
+                toPicker.date = clampToBounds(toPicker.date, newMin, newMax)
+            } else {
+                // 未手动改过：跟随数据范围（否则新加载的更早条目会被日期过滤整批抹掉）
+                fromPicker.date = newMin
+                toPicker.date = newMax
+            }
+        } finally {
+            suppressEvents = false
+        }
     }
 
     /**
-     * 应用设置里的「默认日期范围（天）」：**打开开关**并填入起止值（随后由对话框触发一次重查）。
+     * 应用设置里的「默认日期范围（天）」：打开开关并把区间填成最近 N 天。
      *
-     * 与 [initDateRange] 的区别：后者只填值、不动开关（用于"起止日历回到当前可见范围"这类
-     * 不改变结果集的场景）；本方法对应"用户配置了默认日期范围"——**必须同时打开开关**，
-     * 否则 [buildFilter] 会把这两个值丢掉，设置项形同虚设（界面也看不到日期面板，无任何反馈）。
+     * 与 [syncDateRangeToData] 的区别：后者用**数据实际范围**校准（不改用户选择），
+     * 本方法对应"用户在设置里配了默认范围"，是主动施加的默认值，必须真正生效。
+     * 因此这里同时把可选范围一并撑到覆盖该区间——否则默认区间早于已加载数据时会被 veto 成空结果。
      *
      * 刻意**不**写回设置（不调 `persistOptions()`）：这是"每次打开对话框施加一次"的默认值，
-     * 不该污染"上次手动选择"的偏好——否则用户把设置改回 0 之后，当初被强制打开的 `true`
-     * 会残留成他的偏好，日期区间再也关不掉。
+     * 不该污染"上次手动选择"的偏好。由于日期区间现在默认就是开的（对齐 TortoiseSVN），
+     * 这里也不再需要"强制打开开关"来避免设置项静默失效。
      */
     fun applyDefaultDateRange(from: Date, to: Date) {
         dateRangeEnabled = true
-        initDateRange(from, to)
+        // 这是用户显式配置的默认范围，**不能**再被"加载更多后跟随数据范围"覆盖
+        dateRangeTouched = true
         syncDateVisibility()
         updateByButton()
+        val lo = toLocalDate(from)
+        val hi = toLocalDate(to)
+        val newMin = listOfNotNull(boundsMin, lo).minOrNull()!!
+        val newMax = listOfNotNull(boundsMax, hi).maxOrNull()!!
+        boundsMin = newMin
+        boundsMax = newMax
+        suppressEvents = true
+        try {
+            fromPicker.settings.setDateRangeLimits(newMin, newMax)
+            toPicker.settings.setDateRangeLimits(newMin, newMax)
+            fromPicker.date = lo.coerceIn(newMin, newMax)
+            toPicker.date = hi.coerceIn(newMin, newMax)
+        } finally {
+            suppressEvents = false
+        }
     }
 
     /**
-     * 把起止日历**向外扩**到已加载数据的实际范围（只扩不收，且不触发重查）。
+     * 只取**日期维度**（含开关状态）的过滤条件。
      *
-     * 用于「全部显示」之后：打开对话框时起止日历取的是**首屏**范围（见 RevisionSelectDialog
-     * 的 init），而加载走的是游标模式（过滤条件里没有日期），点「全部显示」后列表会覆盖
-     * 整条历史——此时日期控件仍显示首屏那个窄区间，与列表内容不符；用户随后点「重新整理」
-     * 还会被这个陈旧区间把数据截回去。
-     *
-     * 只扩不收：用户手填的区间可能比数据更宽（例如刻意留了空档），不能因为「数据没覆盖到」
-     * 就把他的手填值改窄。内部走 suppressEvents，因此不会立刻触发一次重查。
+     * 供调用方在"加载完成 → 日历可能变了"这类场景下更新生效条件：
+     * 用它 [LogFilter.copy] 现有条件，只替换日期部分，
+     * 就不会把**尚未提交的搜索词**提前写进生效条件（否则会出现"列表突然按新词过滤了"）。
      */
-    fun widenDateRangeTo(min: Date?, max: Date?) {
-        if (min == null || max == null) return
-        val currentFrom = toDate(fromPicker, false) ?: min
-        val currentTo = toDate(toPicker, true) ?: max
-        val newFrom = minOf(currentFrom, min)
-        val newTo = maxOf(currentTo, max)
-        // dateBounds（reset() 的回退目标）同步取并集，保证「重置过滤」回到最宽的已知范围
-        dateBounds = (dateBounds.first?.let { minOf(it, newFrom) } ?: newFrom) to
-            (dateBounds.second?.let { maxOf(it, newTo) } ?: newTo)
-        suppressEvents = true
-        setPickers(newFrom, newTo)
-        suppressEvents = false
-    }
+    fun dateRangeFilter(): LogFilter = LogFilter(
+        dateRangeEnabled = dateRangeEnabled,
+        fromDate = if (dateRangeEnabled) toDate(fromPicker, false) else null,
+        toDate = if (dateRangeEnabled) toDate(toPicker, true) else null,
+    )
 
-    /** 清空搜索文本并重置日期区间为当前页范围（保留 By 选择与大小写/正则开关）。 */
-    fun reset() {
+    /**
+     * X 按钮：**只**清空搜索文本（保留 By 选择、日期区间、大小写/正则开关与版本区间）。
+     *
+     * 为什么不动日期：日期区间是独立维度，用户点 X 的意图是"清掉刚才搜的东西"，
+     * 而不是"把日期也恢复成某个基准"。早期实现顺带把日历重置为"数据范围"，
+     * 于是点一下 X 就连带改变日期过滤（甚至触发一次全量重拉），非常反直觉。
+     */
+    fun clearSearchText() {
         suppressEvents = true
         searchField.text = ""
-        setPickers(dateBounds.first, dateBounds.second)
         suppressEvents = false
-        updateByButton()
+        syncClearVisibility()
         persistOptions()
         onFilterChanged()
     }
 
-    /** 日期必填：边界缺失时用今天兜底，避免出现「不允许空日期」状态。 */
-    private fun setPickers(min: Date?, max: Date?) {
-        fromPicker.date = min?.let { toLocalDate(it) } ?: LocalDate.now()
-        toPicker.date = max?.let { toLocalDate(it) } ?: LocalDate.now()
-    }
+    /** 值落在可选范围之外时（如可选范围被收窄）把它拉回范围内，避免控件进入 veto 状态。 */
+    private fun clampToBounds(value: LocalDate?, lo: LocalDate, hi: LocalDate): LocalDate =
+        (value ?: lo).coerceIn(lo, hi)
 
     private fun toLocalDate(date: Date): LocalDate =
         date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()

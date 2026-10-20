@@ -33,10 +33,10 @@ class EnhanceMergeBundleTest {
 
     @Test
     fun `message formats parameters`() {
-        // error.unexpected.changes.provider=Unexpected committed changes provider: {0}
+        // error.load.revisions=Failed to load revisions: {0}
         assertEquals(
-            "Unexpected committed changes provider: test-provider",
-            EnhanceMergeBundle.message("error.unexpected.changes.provider", "test-provider")
+            "Failed to load revisions: test-provider",
+            EnhanceMergeBundle.message("error.load.revisions", "test-provider")
         )
     }
 }

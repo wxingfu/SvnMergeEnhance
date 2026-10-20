@@ -15,10 +15,23 @@ import java.util.Date
  * | [AUTHOR]  | `LOGFILTER_AUTHORS`  | 作者 |
  * | [REVISION]| `LOGFILTER_REVS`     | 版本号 |
  * | [BUG_ID]  | `LOGFILTER_BUGID`    | Bug-ID（提交说明中形如 `PROJECT-123` 的片段）|
- * | [DATE]    | `LOGFILTER_DATE`     | 日期文本（与搜索词做子串匹配，区别于 [dateRangeEnabled]）|
+ * | [DATE]    | `LOGFILTER_DATE`     | 日期文本（与搜索词做子串匹配，区别于日期区间）|
  *
- * 注：[DATE] 是「文本匹配日期字符串」；而「日期区间」由独立的 [dateRangeEnabled] + [fromDate]/[toDate] 控制，
- * 对应 TortoiseSVN 的 `LOGFILTER_DATERANGE`（默认**关闭**，用户勾选后才显示起止日历并收缩结果集）。
+ * 注：[DATE] 是「文本匹配日期字符串」；日期区间由独立的 [dateRangeEnabled] + [fromDate]/[toDate]
+ * 控制，对应 TortoiseSVN 的 `LOGFILTER_DATERANGE`。
+ *
+ * ## 三个维度彼此独立（对齐 TortoiseSVN）
+ *
+ * 1. **搜索框文本**：只做子串/正则匹配，**永不**被解析成版本区间。
+ *    早期实现会用「文本形如 `10-20`」来推断版本区间，于是搜 `2026-10`（想按月份搜）
+ *    被静默改写成「版本 [10, 2026]」，结果恒为空且无任何提示。TortoiseSVN 没有这种语法：
+ *    它的版本区间在独立的「Show range」对话框里（`m_startRev`/`m_endRev`），
+ *    搜索框里修订号只是被当作**普通文本**参与匹配（`LogDlgFilter.cpp` 的 `LOGFILTER_REVS`）。
+ *    本类用 [revFrom]/[revTo] 两个显式字段承载该语义。
+ * 2. **日期区间**：纯**客户端**过滤，**不参与**任何远端查询。TortoiseSVN 同样如此——
+ *    `m_tFrom`/`m_tTo` 只写进 `CLogDlgFilter`，而 filter 只用于 `m_logEntries.Filter(...)`
+ *    内存过滤（`LogDlg.cpp` 的 `RecalculateShownList`）。
+ * 3. **版本区间**：唯一会改变「去服务端取哪一段」的维度，由 [LogPageLoader] 消费。
  */
 enum class LogFilterField(val id: String) {
     MESSAGE("message"),
@@ -30,43 +43,53 @@ enum class LogFilterField(val id: String) {
 }
 
 /**
- * 修订日志过滤条件，语义严格对齐 TortoiseSVN 的 `CLogDlgFilter`（[G:\gitDownload\TortoiseSVN]）。
+ * 修订日志过滤条件，语义严格对齐 TortoiseSVN 的 `CLogDlgFilter`。
  *
- * ## 搜索框匹配语义（核心）
+ * ## 搜索框匹配语义
  *
  * 1. 搜索框文本按**空格**拆分为多个 token；每个 token 可带前缀：
  *    - 无前缀 → 必须出现（AND）
  *    - `-` → 必须**不**出现（AND NOT）
  *    - `+` → 与同组 `+` token 取「任一出现」（OR）
- *    - `"..."` → 带空格的整段子串
+ *    - `"..."` → 带空格的整段子串（内部 `""` 转义为一个 `"`）
  * 2. 所有被勾选字段的文本会被**拼接成一条**字符串，每个 token 在该字符串内做匹配
  *    （即「跨字段 OR、跨词 AND」——单个词只要出现在任一勾选字段即可）。
  * 3. 默认**大小写不敏感**；勾选 `Match case` 后敏感。
  * 4. 勾选 `Use regular expressions` 后，每个 token 作为独立正则，**全部**须匹配。
- * 5. 搜索框为空 → 不过滤（[isFiltering] 为 false）。
- * 6. 整段以 `!` 开头 → 结果取反（TortoiseSVN `negate`）。
+ * 5. 搜索框为空 → 文本维度不过滤。
+ * 6. 整段以 `!` 开头 → 文本匹配结果取反（TortoiseSVN `negate`）。
  *
- * ## 日期区间优先
+ * ## 判定顺序
  *
- * [dateRangeEnabled] 且起/止非空时，先做服务端/客户端日期裁剪，再叠加上述文本匹配。
- * 版本区间（`10-20` / `10:20`，无空格）作为特例按版本号范围过滤。
+ * [matches] 与 TortoiseSVN 的 `CLogDlgFilter::operator()` 一致：**先硬边界、后文本**——
+ * 版本区间 → 日期区间 → 文本匹配。硬边界不满足时直接排除，不再做昂贵的文本匹配。
  */
 data class LogFilter(
     val searchText: String = "",
     val fields: Set<LogFilterField> = LogFilterField.values().toSet(),
     /**
-     * 对应 `LOGFILTER_DATERANGE`：开启时显示并使用起止日历。
+     * 对应 `LOGFILTER_DATERANGE`。
      *
-     * 默认 **false**（关闭）：对齐 TortoiseSVN 的"日期范围默认不收缩结果集"行为——
-     * 不勾选时 `fromDate`/`toDate` 即使有值也不参与匹配（`hasDateRange()` 返回 false），
-     * 加载走模式 B（从 HEAD 往回扫全量），搜索才能命中深历史；用户主动勾选后才启用日期维度。
+     * 默认 **true**（对齐 TortoiseSVN 的 `m_selectedFilters(LOGFILTER_ALL)`：日期区间位默认就是开的）。
+     * 因为本插件的日期区间是**纯客户端**过滤、且默认值恒等于「已加载数据的 min/max 日期」，
+     * 「开着」与「关着」在首屏是等价的，不存在"控件显示已过滤、实际未过滤"的错位。
+     * 关闭开关则彻底不按日期裁剪（[matches] 里跳过日期判定）。
      */
-    val dateRangeEnabled: Boolean = false,
+    val dateRangeEnabled: Boolean = true,
     val fromDate: Date? = null,
     val toDate: Date? = null,
+    /**
+     * 版本区间下界（含），null 表示不限。
+     *
+     * 来自独立的「版本区间」对话框（对齐 TortoiseSVN 的 Show range），
+     * **不再**从搜索框文本推断——搜索框只负责文本匹配。
+     */
+    val revFrom: Long? = null,
+    /** 版本区间上界（含），null 表示不限。 */
+    val revTo: Long? = null,
     val useRegex: Boolean = false,
     val caseSensitive: Boolean = false,
-    /** Bug-ID 提取正则（T9 可在设置中修改；调用方负责在正则无效时回退默认值）。 */
+    /** Bug-ID 提取正则（可在设置中修改；调用方负责在正则无效时回退默认值）。 */
     val bugIdPattern: Regex = DEFAULT_BUG_ID_PATTERN,
 ) {
 
@@ -74,21 +97,28 @@ data class LogFilter(
 
     fun hasDateRange(): Boolean = dateRangeEnabled && (fromDate != null || toDate != null)
 
-    fun hasRevisionRange(): Boolean =
-        fields.contains(LogFilterField.REVISION) && looksLikeRevisionRange(searchText)
-
-    fun revisionRange(): Pair<Long?, Long?> =
-        if (hasRevisionRange()) parseRevisionRange(searchText) else null to null
+    fun hasRevisionRange(): Boolean = revFrom != null || revTo != null
 
     /** 是否存在会改变结果集的条件。 */
     fun isFiltering(): Boolean = hasDateRange() || hasRevisionRange() || hasSearchText
 
+    /**
+     * 单条日志是否命中。判定顺序：版本区间 → 日期区间 → 文本。
+     *
+     * 版本区间/日期区间都是**客户端**判定，因此无论它们由谁设置、什么时候设置，
+     * 都只影响"已加载数据的可见子集"，不会引起重新查询（见类文档「三个维度彼此独立」）。
+     */
     fun matches(list: SvnChangeList): Boolean {
+        // 1. 版本区间（硬边界）
+        if (revFrom != null && list.number < revFrom) return false
+        if (revTo != null && list.number > revTo) return false
+        // 2. 日期区间（硬边界）
         if (dateRangeEnabled) {
             val d = list.commitDate ?: return false
             if (fromDate != null && d < fromDate) return false
             if (toDate != null && d > toDate) return false
         }
+        // 3. 文本匹配
         val text = searchText.trim()
         if (text.isEmpty()) return true
         // 整段以 ! 取反
@@ -98,25 +128,9 @@ data class LogFilter(
         return if (negate) !result else result
     }
 
-    /**
-     * 客户端过滤入口（与 [matches] 完全等价，单独命名是为了让调用点表达意图）。
-     *
-     * 两个使用场景：
-     * - `LogPageLoader` 模式 A：服务端已按日期裁过一遍，但仍要在**整段结果内**按文本/版本
-     *   条件过滤（日期模式一次拉完，分页在内存做）；
-     * - `LogPageLoader` 模式 B：服务端返回的是"从游标往后 N 条原始数据"，要在里面挑满足条件的，
-     *   不足一页就循环补页。
-     */
-    fun matchesClientSide(list: SvnChangeList): Boolean = matches(list)
-
     // ----------------------------------------------------- 文本匹配（核心）
 
     private fun matchText(list: SvnChangeList, text: String): Boolean {
-        if (hasRevisionRange()) {
-            val (from, to) = revisionRange()
-            val n = list.number
-            return (from == null || n >= from) && (to == null || n <= to)
-        }
         val tokens = tokenize(text)
         if (tokens.isEmpty()) return true
         val combined = buildCombined(list)
@@ -164,11 +178,22 @@ data class LogFilter(
             }
             if (i < s.length && s[i] == '"') {
                 i++
-                val start = i
-                while (i < s.length && s[i] != '"') i++
-                val word = s.substring(start, i.coerceAtMost(s.length))
-                if (i < s.length) i++
-                if (word.isNotBlank()) tokens.add(Token(type, word))
+                val sb = StringBuilder()
+                while (i < s.length) {
+                    if (s[i] == '"') {
+                        // "" 转义为一个 '"'（TortoiseSVN 同款处理）
+                        if (i + 1 < s.length && s[i + 1] == '"') {
+                            sb.append('"')
+                            i += 2
+                            continue
+                        }
+                        i++
+                        break
+                    }
+                    sb.append(s[i])
+                    i++
+                }
+                if (sb.isNotBlank()) tokens.add(Token(type, sb.toString()))
             } else {
                 val start = i
                 while (i < s.length && s[i] != ' ') i++
@@ -289,40 +314,5 @@ data class LogFilter(
 
         private val DATE_TIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern(DATE_TIME_PATTERN).withZone(ZoneId.systemDefault())
-
-        /**
-         * 解析版本区间文本：`40` / `40-50` / `40-` / `-50`（也接受 `:` `~` 与空格）。
-         *
-         * @return `起始修订号` 与 `截止修订号`（可为 null）
-         */
-        fun parseRevisionRange(text: String): Pair<Long?, Long?> {
-            val trimmed = text.trim()
-            if (trimmed.isEmpty()) return null to null
-            val separator = trimmed.indexOfFirst { isRangeSeparator(it) }
-            if (separator < 0) return trimmed.toLongOrNull() to null
-            val left = trimmed.substring(0, separator).trim().toLongOrNull()
-            val right = trimmed.substring(separator + 1).trim().toLongOrNull()
-            return left to right
-        }
-
-        /**
-         * 文本是否形如版本区间（含分隔符、无空格，且**两侧必须是数字或空**）。
-         * 据此区分「单个数字=普通匹配」与「区间=按区间过滤」。
-         *
-         * 两侧必须为数字，否则 `ABC-123`、`JIRA-77`、`XYZ-\d+` 这类**普通文本**会被误判成区间，
-         * 解析失败后按「无限制」处理 → 整个过滤失效（T10 单测暴露，已修）。
-         */
-        fun looksLikeRevisionRange(text: String): Boolean {
-            val trimmed = text.trim()
-            if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return false
-            val separator = trimmed.indexOfFirst { isRangeSeparator(it) }
-            if (separator < 0) return false
-            val left = trimmed.substring(0, separator)
-            val right = trimmed.substring(separator + 1)
-            return (left.isEmpty() || left.all { it.isDigit() }) && (right.isEmpty() || right.all { it.isDigit() })
-        }
-
-        private fun isRangeSeparator(c: Char): Boolean =
-            c == '-' || c == ':' || c == '~'
     }
 }

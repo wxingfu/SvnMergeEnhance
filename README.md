@@ -52,10 +52,10 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 | 能力 | 说明 |
 |---|---|
-| 实时过滤 | TortoiseSVN 语法：空格分词，`-词` 排除、`+词` 或匹配、`"短语"`、`!` 取反；可勾选 Message / Path / Author / Revision / Bug-ID / Date 字段，支持正则与大小写敏感 |
-| 日期区间 | `From` / `To` 日历（点击即弹日历，**周一在首列、周日在末列**），服务端按日期裁剪 |
-| 版本区间 | 搜索框输入 `10-20` / `10-` / `-20` 按修订号范围过滤 |
-| 分页加载 | 首屏 + 「+100 / +500 / 全部显示」实时向仓库翻页，不用本地缓存 |
+| 实时过滤 | TortoiseSVN 语法：空格分词，`-词` 排除、`+词` 或匹配、`"短语"`、`!` 取反；可勾选 Message / Path / Author / Revision / Bug-ID / Date 字段，支持正则与大小写敏感。**搜索框只做文本匹配**（`10-20`、`2026-10` 这类内容按字面匹配，不再被当成版本区间） |
+| 日期区间 | `From` / `To` 日历（点击即弹日历，**周一在首列、周日在末列**），**纯客户端**按提交日期过滤；对话框打开时默认覆盖已加载数据的提交日期范围，日历可选范围也锁在该范围内 |
+| 版本区间 | 点击顶部「版本区间…」按钮（复刻 TortoiseSVN Show range）输入上/下界修订号；**只有它**会改变向服务端请求的版本范围，搜索框不再解析版本区间 |
+| 分页加载 | 首屏 + 「+100 / +500 / 全部显示」实时向仓库翻页（游标分页，单通道），不用本地缓存 |
 | 合并状态 | 每行显示 已合并 ✔ / 外来修订（无图标）/ 计算中 图标；右栏对**已合并**文件追加 `[Already merged]` |
 | 变更文件 | 右侧 `CommittedChangesBrowser` 展示所选修订的变更路径，支持 `Ctrl+D` 查看差异 |
 | 快速搜索 | 列表内直接输入文字，按提交说明定位行 |
@@ -128,7 +128,7 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 5. **④ 选择修订**：
    - 勾选需要合并的版本（鼠标点行首复选框，或选中行后按 `Space`）；
-   - 顶部过滤栏缩小范围：`By ▾` 选字段、搜索框输入关键词（支持 `-排除`、`+或`、`"短语"`、`!` 取反）、`From/To` 限定日期（点击日期框即弹出日历，周一在首列、周日在末列）；
+   - 顶部过滤栏缩小范围：`By ▾` 选字段、搜索框输入关键词（支持 `-排除`、`+或`、`"短语"`、`!` 取反，**只做文本匹配**）、`From/To` 限定日期（点击日期框即弹出日历，周一在首列、周日在末列）；需要按版本号范围过滤时，点「版本区间…」按钮输入上/下界修订号；
    - 「+100 / +500 / 全部显示」继续向后翻页；`Refresh` 按当前条件重查；
    - 列表内直接输入文字可快速定位到匹配提交；选中行后 `Ctrl+D` 查看该修订差异；
    - 底部状态栏实时确认：「显示 N 个版本（rA–rB）— 已选 M 个，包含 K 个路径」。
@@ -151,7 +151,7 @@ Working Copies Information 面板 → Enhance Merge… 链接
 | 能力 | 使用的内置插件 API |
 |---|---|
 | 分支选择 | `SelectBranchPopup.showForBranchRoot(...)` + `SvnBranchConfigurationNew`（原版弹窗，零自绘） |
-| 修订日志 | `MergeCalculatorTask.loadChangeLists(ctx, cursor, size)`（游标分页）+ `SvnCommittedChangesProvider.getCommittedChanges(...)`（日期区间） |
+| 修订日志 | `MergeCalculatorTask.loadChangeLists(ctx, cursor, size)`（游标分页，单通道；日期区间改为客户端过滤，不再走 `SvnCommittedChangesProvider`） |
 | 列表渲染 | `TableView` + `ListTableModel` + `CommittedChangesBrowser` + `CommittedChangesTreeBrowser.collectChanges` |
 | 勾选语义 | `QuantitySelection<Long>`（稀疏表示：全选后排除个别） |
 | 合并状态 | `OneShotMergeInfoHelper(context)`（`MergeChecker`）+ `ListMergeStatus`（图标）/ `ChangeNodeDecorator`（`[Already merged]`） |
@@ -165,10 +165,11 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
    | 模式 | 触发 | 数据来源 | 分页 |
    |---|---|---|---|
-   | A 日期模式 | 填了 From/To | `SvnCommittedChangesProvider`（服务端按日期裁剪） | 内存分页 |
-   | B 游标模式 | 日期均空 | `MergeCalculatorTask.loadChangeLists` | 服务端分页 + 客户端过滤不足时循环补页（≤10 批） |
+   | 游标模式（单通道） | 始终 | `MergeCalculatorTask.loadChangeLists`（按版本游标翻页） | 服务端分页 + 客户端过滤不足时循环补页（≤10 批） |
 
-   版本区间搜索词 `10-20` 会转成游标上界 `revTo + 1`（原版排除等于 `beforeRevision` 的修订），下界 `revFrom` 命中即早停。
+   三个过滤维度只影响**客户端展示**，不切换查询通道：
+   - **搜索 / 日期区间**：纯客户端过滤（日期区间默认开启、值 = 已加载数据的提交日期，可选范围锁在数据内）；
+   - **版本区间**：由顶部「版本区间…」对话框设置，改写游标上/下界（复刻 TSVN Show range）——**只有它**会改变向服务端 `svn log` 请求的版本范围，`revFrom` 命中即早停、`revTo` 作为游标起点。
 
 2. **合并状态**（T8）后台线程批量调 `MergeChecker.checkList()`，映射 `MERGED→MERGED` / `NOT_EXISTS→ALIEN` / 其余→`REFRESHING`，每 10 条批量重绘一次；图标渲染在**复选框之后**（命中区 `[cell.x, cell.x+checkboxWidth]` 与视觉对齐）。右栏 `[Already merged]` 取 `getNotMergedPaths` 的补集。
 
@@ -201,13 +202,14 @@ SubversionEnhance/
 │   ├── EnhanceMergeAction.kt             # 流程入口（普通类，非 AnAction；由注入链接直接调用）
 │   ├── EnhanceMergeBundle.kt             # 语言包感知的文案 bundle（英文基包 / _zh_CN）
 │   ├── flow/MergeFlow.kt                # 全流程编排：分支弹窗 → 方式确认 → 版本选择 → 合并
-│   ├── log/LogPageLoader.kt             # 修订日志分页加载（日期模式 / 游标模式）
+│   ├── log/LogPageLoader.kt             # 修订日志分页加载（游标单通道 + 世代号防串）
 │   ├── log/LogFilter.kt                 # 过滤条件模型 + TortoiseSVN 搜索语法
 │   ├── merge/MergeExecutor.kt           # 合并执行（LocalChangesPromptTask + SvnIntegrateChangesTask）
 │   ├── settings/EnhanceMergeSettings.kt  # 设置状态（applicationService，持久化 svnEnhanceMerge.xml）
 │   ├── settings/EnhanceMergeConfigurable.kt # 设置页 UI（Version Control 分组）
 │   ├── ui/RevisionSelectDialog.kt       # 修订选择对话框（renderer / 分页 / 合并状态 / 快速搜索）
 │   ├── ui/LogFilterPanel.kt             # 顶部过滤栏（By ▾ / 搜索框 / 起止日历）
+│   ├── ui/RevRangeDialog.kt              # 版本区间对话框（复刻 TSVN Show range）
 │   ├── ui/MergeVariantDialog.kt         # 合并方式确认（Revision Select / Cancel）
 │   └── wcinfo/WcInfoLinkInjector.kt     # 向 Working Copies Information 面板注入 Enhance Merge 链接
 ├── src/main/resources/
@@ -216,9 +218,12 @@ SubversionEnhance/
 │   ├── pluginIcon.svg / pluginIcon_dark.svg    # 插件图标 40×40（浅色 / 深色主题）
 │   └── THIRD-PARTY-LICENSES.txt        # 第三方许可全文（LGoodDatePicker，MIT）
 └── src/test/kotlin/com/svn/revisionselect/
-    ├── LogFilterTest.kt                 # 过滤语义 25 用例
-    ├── LogPageLoaderTest.kt             # 双模式分页 12 用例
-    └── QuantitySelectionTest.kt         # 稀疏勾选 9 用例
+    ├── LogFilterTest.kt                 # 过滤语义 24 用例（文本语法 / 字段 / 日期区间边界 / 版本区间为硬边界）
+    ├── LogPageLoaderTest.kt             # 游标单通道分页 15 用例（世代号 / 补批 / MAX_BATCHES / reopenIfExhausted）
+    ├── QuantitySelectionTest.kt         # 稀疏勾选 9 用例
+    ├── EnhanceMergeBundleTest.kt        # 文案 bundle 3 用例（基包 / _zh_CN / 缺键回退）
+    ├── BundleKeysTest.kt                # 文案 key 双向对齐 4 用例
+    └── EnhanceMergeSettingsTest.kt      # 设置持久化与开关语义 8 用例
 ```
 
 ---
@@ -273,7 +278,7 @@ SubversionEnhance/
 | 每页版本数 | `100` | 首屏与每次「加载更多」的条数（10–500），对齐 TortoiseSVN 的 `NumberOfLogs` |
 | 计算已合并状态 | 开 | 为每行显示已合并/外来/计算中图标，并在变更文件列表标记 `[Already merged]`；关闭后不读取 `svn:mergeinfo` |
 | Bug-ID 正则 | `[A-Z][A-Z0-9]+-\d+` | 勾选 Bug-IDs 过滤字段时从提交说明提取 Bug-ID；填错时自动回退默认值 |
-| 默认日期范围（天） | `0` | >0 时过滤栏默认**展开「日期区间」**并填入「最近 N 天」，打开对话框即按该区间过滤；0 表示不限制（沿用上次手动选择的开关状态） |
+| 默认日期范围（天） | `0` | >0 时打开对话框会把起止日期**覆盖**为「最近 N 天」（其余情况下日期区间默认开启、值 = 已加载数据的提交日期）；0 表示不限制（沿用上次手动选择的开关状态） |
 
 此外，过滤栏的**勾选字段、日期区间开关、正则/大小写开关**会自动沿用上次使用
 （同样存在 `svnEnhanceMerge.xml` 里；它们属于顺手记住的交互偏好，故不在设置页做 UI）。
@@ -293,8 +298,11 @@ SubversionEnhance/
 
 | 测试类 | 用例数 | 覆盖 |
 |---|---|---|
-| `LogFilterTest` | 25 | 空条件、单/多词 AND、`-` 排除、`+` 或组、引号短语、`!` 取反、大小写敏感、正则模式（含非法正则）、Bug-ID 字段（默认/自定义正则）、日期区间含边界、版本区间各形态、含 `-` 文本不被误判为区间、高亮区间、字段选择 |
-| `LogPageLoaderTest` | 12 | 日期模式一次拉取 + 内存分页 + 客户端过滤；游标模式推进 / 到底 / 整页保守判定 / `revTo+1` 边界 / `revFrom` 早停 / 补批 / `MAX_BATCHES` 上限 / `reopenIfExhausted` |
+| `LogFilterTest` | 24 | 空条件、单/多词 AND、`-` 排除、`+` 或组、引号短语、`!` 取反、大小写敏感、正则模式（含非法正则）、Bug-ID 字段（默认/自定义正则）、日期区间（默认开 / 客户端过滤 / 含边界）、版本区间为独立硬边界（搜索框不解析 `10-20`）、含 `-` 文本不被误判为区间、高亮区间、字段选择 |
+| `LogPageLoaderTest` | 15 | 游标单通道：推进 / 到底 / 整页保守判定 / `revFrom` 早停 / 补批 / `MAX_BATCHES` 上限 / `reopenIfExhausted`；**世代号**：stale 世代号不发包、条件变化后旧在飞任务作废 |
+| `EnhanceMergeBundleTest` | 3 | 文案 bundle：基包 / `_zh_CN` / 缺键回退（含 properties ↔ 代码引用双向对齐守护） |
+| `BundleKeysTest` | 4 | 文案 key：properties ↔ 代码引用双向对齐 |
+| `EnhanceMergeSettingsTest` | 8 | 设置持久化：默认日期范围语义、开关状态沿用、日期区间开关默认值 |
 | `QuantitySelectionTest` | 9 | 全不选起点的增删清、全选起点的排除与恢复、`areAllSelected()` 的原版语义（起点为全选时恒为 `true`，本插件 `selectedChangeLists()` 依赖该行为走排除集） |
 
 > 测试通过 `cursorSource` / `dateRangeSource` 注入点喂假数据，不连仓库；
