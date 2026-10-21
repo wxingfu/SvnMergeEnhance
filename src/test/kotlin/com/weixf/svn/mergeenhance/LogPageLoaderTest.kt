@@ -1,7 +1,6 @@
 package com.weixf.svn.mergeenhance
 
 import com.weixf.svn.mergeenhance.log.LogFilter
-import com.weixf.svn.mergeenhance.log.LogFilterField
 import com.weixf.svn.mergeenhance.log.LogPageLoader
 import io.mockk.every
 import io.mockk.mockk
@@ -208,28 +207,21 @@ class LogPageLoaderTest {
     // -------------------------------------------------- 与过滤条件的分工
 
     @Test
-    fun `the loader ignores dates and search text entirely`() {
-        // 关键契约：加载器**只按修订号游标**取数。日期/文本/搜索词全部由对话框在内存里过滤，
+    fun `the loader ignores search text entirely`() {
+        // 关键契约：加载器**只按修订号游标**取数。搜索词全部由对话框在内存里过滤，
         // 因此加载器不受任何过滤条件影响（对齐 TortoiseSVN：服务端只认 m_startRev/m_limit）。
         var calls = 0
         val loader = LogPageLoader(context, cursorSource = { _, _ ->
             calls++
             page(30, 29, 28, 27, 26, 25, 24, 23, 22, 21) to false
         })
-        val withDate = LogFilter(
-            dateRangeEnabled = true,
-            fromDate = Date(0),
-            toDate = Date(4102444800000L),
-            searchText = "login",
-            fields = setOf(LogFilterField.MESSAGE),
-        )
+        val withSearch = LogFilter(searchText = "login")
         val raw = loader.fetch(10)
         assertEquals(10, raw.size)
         assertEquals(30L, raw.first().number)
         assertEquals(21L, raw.last().number)
         assertEquals(1, calls)
-        // 加载器返回的是**原始**条目：带 searchText 的 filter 一条都不命中，
-        // 证明"过滤是调用方（对话框在内存里）的职责"，加载器完全不参与
-        assertEquals(0, raw.count { withDate.matches(it) })
+        // 加载器返回的是**原始**条目：过滤是调用方（对话框在内存里）的职责，加载器完全不参与
+        assertEquals(0, raw.count { withSearch.matches(it) })
     }
 }

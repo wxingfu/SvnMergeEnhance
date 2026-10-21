@@ -24,10 +24,7 @@ import com.intellij.openapi.vcs.versionBrowser.CommittedChangeList
 import com.intellij.ui.ClickListener
 import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.SimpleColoredComponent
-import com.intellij.ui.TableViewSpeedSearch
-import com.intellij.util.Alarm
 import com.intellij.ui.SimpleTextAttributes
-import com.intellij.ui.components.JBLabel
 import com.intellij.ui.table.TableView
 import com.intellij.util.ui.ColumnInfo
 import com.intellij.util.ui.JBUI
@@ -35,7 +32,6 @@ import com.intellij.util.ui.ListTableModel
 import com.intellij.util.ui.UIUtil
 import com.weixf.svn.mergeenhance.EnhanceMergeBundle
 import com.weixf.svn.mergeenhance.log.LogFilter
-import com.weixf.svn.mergeenhance.log.LogFilterField
 import com.weixf.svn.mergeenhance.log.LogPageLoader
 import com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings
 import org.jetbrains.idea.svn.history.SvnChangeList
@@ -54,14 +50,12 @@ import com.intellij.openapi.diagnostic.Logger
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Rectangle
-import java.util.Date
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComponent
-import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTable
 import javax.swing.ListSelectionModel
@@ -174,38 +168,25 @@ class RevisionSelectDialog(
      */
     private lateinit var revisionsList: TableView<SvnChangeList>
     private lateinit var changesBrowser: CommittedChangesBrowser
-    private lateinit var statusLabel: JBLabel
     private lateinit var toolbar: ActionToolbar
 
     /** 「加载更多」进行中（防止重复触发；同时驱动工具栏动作的可用态）。 */
     private var loadingMore = false
 
     /**
-     * 过滤栏。**必须在 `init {}` 之前声明**：`init {}` 会调用 DialogWrapper.init()
+     * 表格上方的显式搜索框（第五轮唯一新增组件）。
+     *
+     * **必须在 `init {}` 之前声明**：`init {}` 会调用 DialogWrapper.init()
      * → createCenterPanel()，而 Kotlin 属性初始化按**声明顺序**执行——
-     * 声明在 init 之后会导致 createCenterPanel 里用到 null/未初始化字段。
+     * 声明在 init 之后会导致 createCenterPanel 里用到未初始化字段。
      */
-    private val filterPanel = LogFilterPanel(disposable) { onFilterChanged() }
+    private val searchField = RevisionSearchField(disposable) { onFilterChanged() }
 
     /**
-     * 状态栏「已选路径数」的重算防抖（绑对话框 disposable，关闭即作废）。
+     * 当前生效的过滤条件（改搜索词 / 加载更多时复用）。
      *
-     * 为什么需要：`collectChanges()` 要遍历**全部**选中修订、为每条路径构造 `Change`，
-     * 再做一次跨修订合并（`CommittedChangesTreeBrowser.zipChanges`）。「全选 + 全部显示」之后
-     * 每勾一次复选框就要重算上万条，在 EDT 上明显卡顿。勾选是高频操作，因此：
-     * - 状态栏先沿用上一次的 [pathCount]，文字立即刷新（用户感知不到 200ms 的滞后）；
-     * - 真正的重算排进 [Alarm]，连续勾选只在停手后算一次。
-     */
-    private val pathCountAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, disposable)
-
-    /** 状态栏当前显示的「已选路径数」；防抖期间沿用旧值，停手后重算。 */
-    private var pathCount = 0
-
-    /**
-     * 当前生效的过滤条件（Load More / 全部显示时复用，避免重复构建）。
-     *
-     * `@Volatile`：EDT 写、后台线程读（`loadMore`/`loadAll` 的 `run()`
-     * 必须在启动前抓到一份不可变快照，不能在后台线程里直接读这个字段）。
+     * `@Volatile`：EDT 写、后台线程读（过滤任务在启动前抓到一份不可变快照，
+     * 不能在后台线程里直接读这个字段）。
      */
     @Volatile
     private var currentFilter: LogFilter = LogFilter()
@@ -213,18 +194,10 @@ class RevisionSelectDialog(
     /**
      * 上一次**后台过滤**得到的命中条数（过滤在后台线程做，EDT 读不到即时结果）。
      *
-     * 用途：状态栏提示"已加载 N 条中匹配 M 条"——M 即此值。
+     * 用途：搜索框同行右侧的计数标签「匹配 M / 已加载 N」——M 即此值。
      */
     @Volatile
     private var lastMatchCount: Int = 0
-
-    /**
-     * 是否已触及"已加载原始修订总量上限"（[MAX_LOADED_ALL]）。
-     *
-     * 触顶后不再继续向服务端拉取，并在状态栏提示——否则用户会以为"仓库里就这么点修订"。
-     */
-    @Volatile
-    private var loadLimitReached: Boolean = false
 
     /**
      * 当前加载任务的进度指示器：启动新任务前用它**取消**旧任务。
@@ -281,45 +254,9 @@ class RevisionSelectDialog(
     private val loadFiveHundredAction = createLoadMoreAction("action.load.fiveHundred", LOAD_MORE_LARGE)
 
     /**
-     * 「重新整理」：**清空并从 HEAD 重新拉取**（对应 TortoiseSVN 同名按钮，已从底部移到顶部）。
-     *
-     * 语义区别（第四轮后）：过滤条件变化只是**重过滤**已加载集合（零请求），
-     * 而「重新整理」是用户显式要求"重新查一遍仓库"——因此它会清空已加载全集、
-     * 重置游标（[LogPageLoader.reset]）并重拉首屏。
-     */
-    private val reloadAction = object : DumbAwareAction(
-        EnhanceMergeBundle.message("action.reload"),
-        EnhanceMergeBundle.message("action.reload"),
-        AllIcons.Actions.Refresh,
-    ) {
-        override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = !loadingMore
-        }
-
-        override fun actionPerformed(e: AnActionEvent) = reloadAll()
-    }
-
-    /**
-     * 「全部显示」：循环加载剩余全部修订（已从底部移到顶部）。
-     * 按需求**常显常可用**（仅加载中禁用）；即使此前判定已到底，点击也会重新探测一次。
-     */
-    private val showAllAction = object : DumbAwareAction(
-        EnhanceMergeBundle.message("action.show.all"),
-        EnhanceMergeBundle.message("action.show.all"),
-        AllIcons.Actions.Download,
-    ) {
-        override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = !loadingMore
-        }
-
-        override fun actionPerformed(e: AnActionEvent) = loadAll()
-    }
-
-
-    /**
      * 「+N」动作工厂（对齐原版 `ToBeMergedDialog.MoreXAction`）。
      *
-     * `isVisible = !loader.allLoaded` 的原因：原版在取完后会**隐藏**这两个按钮
+     * `isVisible = !loader.allLoaded`：原版在取完后会**隐藏**这两个按钮
      * （避免用户点了没反应），因此这里是显隐而非置灰；同时仍保留 `isEnabled` 判断，
      * 让"已取完但按钮还没重绘"的窗口期内点击无害。
      */
@@ -330,7 +267,7 @@ class RevisionSelectDialog(
     ) {
         override fun update(e: AnActionEvent) {
             e.presentation.isEnabled = !loadingMore && !loader.allLoaded
-            e.presentation.isVisible = !loader.allLoaded
+            e.presentation.isVisible = !loadingMore && !loader.allLoaded
         }
 
         override fun actionPerformed(e: AnActionEvent) = loadMore(quantity)
@@ -347,27 +284,13 @@ class RevisionSelectDialog(
         // 字段必须在 init 之前声明（见各字段的声明顺序注释）。
         init()
 
-        // 起止日历对齐**已加载数据**的实际日期范围（对齐 TortoiseSVN `LogDlg.cpp:1926-1933`）。
-        // 日期区间是纯客户端过滤、且默认值取数据范围 ⇒ 等价于"全放行"，因此首屏数据
-        // （按"无版本区间"加载的那批）与界面状态天然一致，**不需要任何补查**。
-        // 这正是对齐 TSVN 换来的最大好处：以前这里会出现"日历开着、列表却是未过滤的"。
-        val dates = model.items.mapNotNull { it.commitDate }
-        filterPanel.syncDateRangeToData(dates.minOrNull(), dates.maxOrNull())
-        // currentFilter 必须与 UI 初始状态同步，否则状态栏判定/行渲染用的还是无日期条件的旧值
-        currentFilter = filterPanel.buildFilter()
+        // 首屏过滤条件 = 空（无搜索词即不过滤）。日期区间维度已随第五轮整体移除。
+        currentFilter = LogFilter()
 
         // T8：按设置计算合并状态（已合并 / 外来 / 刷新中）。
         // 关设置时**完全不调** prepare()/checkList()：不查 mergeinfo、不显示图标，
         // 大仓库首屏速度与纯 svn log 一致（这是该设置项存在的意义）。
         if (settings.computeMergeStatus) refreshMergeStatus(model.items)
-
-        // T9：默认日期范围（>0 时把区间覆盖为「最近 N 天」）。
-        // 因为日期区间是客户端过滤，这里**不需要重新查询**，走一次内存重过滤即可。
-        val defaultFrom = settings.defaultFromDate()
-        if (defaultFrom != null) {
-            filterPanel.applyDefaultDateRange(defaultFrom, Date())
-            onFilterChanged()
-        }
     }
 
     // ------------------------------------------------------------------ UI
@@ -380,7 +303,12 @@ class RevisionSelectDialog(
         // 否则平台会告警 "toolbar by default uses any focused component to update its actions"
         val tableComponent = createRevisionTable()
         toolbar = createToolbar().apply { targetComponent = revisionsList }
-        listPanel.add(toolbar.component, BorderLayout.NORTH)
+        // 顶部两行：工具栏（原版四动作）+ 表格正上方的显式搜索框（第五轮唯一新增）
+        val topPanel = JPanel(BorderLayout()).apply {
+            add(toolbar.component, BorderLayout.NORTH)
+            add(searchField, BorderLayout.SOUTH)
+        }
+        listPanel.add(topPanel, BorderLayout.NORTH)
         listPanel.add(tableComponent, BorderLayout.CENTER)
 
         changesBrowser = CommittedChangesBrowser(context.project).apply {
@@ -411,7 +339,6 @@ class RevisionSelectDialog(
             dividerWidth = JBUI.scale(SPLITTER_DIVIDER_WIDTH)
         }
 
-        root.add(filterPanel, BorderLayout.NORTH)
         root.add(splitter, BorderLayout.CENTER)
         root.preferredSize = JBUI.size(1100, 620)
         return root
@@ -420,30 +347,21 @@ class RevisionSelectDialog(
     private fun createRevisionTable(): JComponent {
         revisionsList = TableView(model).apply {
             setExpandableItemsEnabled(false)
-            setTableHeader(null)          // 无表头：单列自绘整行，表头纯属噪音（原版同）
+            setTableHeader(null)          // 无表头：单列整行渲染，表头纯属噪音（原版同）
             setShowGrid(false)           // 无网格线：与 CommittedChangesBrowser 的树视觉一致
-            rowHeight = JBUI.scale(ROW_HEIGHT)   // 比默认高一点，容纳复选框 + 图标 + 两行文本不拥挤
             // 多选间隔：支持 Ctrl/Shift 点选多行（Ctrl+D 看差异、Space 批量勾选都依赖多选）
             selectionModel.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
         }
-        // 单列 FAKE_COLUMN：整行交给自定义 renderer（复选框 + 状态图标 + 自绘文本）
-        revisionsList.columnModel.getColumn(0).cellRenderer = RevisionCellRenderer()
+        // 单列 FAKE_COLUMN：整行交给平台 CommittedChangeListRenderer（与原版 MyListCellRenderer 同构）
+        revisionsList.columnModel.getColumn(0).cellRenderer = OriginalCellRenderer()
 
         // 选中行变化 → 刷新右栏变更文件与 [Already merged] 标记（原版在 valueChanged 里做同一件事）
         revisionsList.selectionModel.addListSelectionListener { onListSelectionChanged() }
         installCheckboxClick()
         installSpaceKeyToggle()
-        // 快速搜索（对齐原版 ToBeMergedDialog：按提交说明匹配并跳转行；2022.1 构造器自动安装监听器）。
-        // 防御：后续 IDE 版本若移除该构造器（新版平台已改为双参重载），降级为不装快速搜索，不影响对话框其余功能。
-        try {
-            object : TableViewSpeedSearch<SvnChangeList>(revisionsList) {
-                override fun getItemText(element: SvnChangeList): String? = element.comment
-            }
-        } catch (e: LinkageError) {
-            // 新版平台改成了双参构造器：旧签名在链接期就抛 NoSuchMethodError（属 LinkageError，
-            // 不是 Exception）。只捕获 LinkageError，不吞真正的逻辑异常。
-            LOG.warn("TableViewSpeedSearch unavailable on this IDE build; speed search disabled", e)
-        }
+        // 隐式 speed search 已随第五轮移除：与表格上方显式搜索框形成双轨，
+        // 且其按键处理会与空格切换勾选竞争（SpeedSearchBase.processKeyEvent 对空白字符
+        // showPopup + consume，已字节码核实）。显式搜索框是唯一搜索入口。
         return ScrollPaneFactory.createScrollPane(revisionsList)
     }
 
@@ -469,9 +387,7 @@ class RevisionSelectDialog(
                     refreshList()
                 }
             },
-            // 顺序对齐需求：Show All / Refresh 常在，+100 / +500 动态显隐并排在其后
-            showAllAction,
-            reloadAction,
+            // 工具栏动作集合与原版一致：Select all / Unselect all / +100 / +500
             loadHundredAction,
             loadFiveHundredAction,
         )
@@ -481,12 +397,8 @@ class RevisionSelectDialog(
     /** 「加载更多」：继续向后翻页（后台执行，可取消），原始数据累积进 `loadedAll`。 */
     private fun loadMore(quantity: Int) {
         if (loadingMore || loader.allLoaded) return
-        // 总量触顶：不再向服务端拉取，并明确提示（否则用户以为"没有更多了"）
-        if (loadedAll.size >= MAX_LOADED_ALL) {
-            loadLimitReached = true
-            updateStatus()
-            return
-        }
+        // 总量触顶：静默停止加载（状态栏已随第五轮移除，原版亦无相关提示）
+        if (loadedAll.size >= MAX_LOADED_ALL) return
         // 停掉在途的加载任务：新任务独占 loader 的游标
         // （旧任务继续跑会抢游标 → 拉到的页被瓜分、请求量翻倍）
         cancelLoadTask()
@@ -537,43 +449,16 @@ class RevisionSelectDialog(
     }
 
     /**
-     * 「全部显示」后把起止日历同步到**已加载数据的实际范围**。
+     * 一批新数据到手后的统一处理：并入全集 → 重过滤 → 重绘。
      *
-     * 为什么需要：日期控件的可选范围锁在已加载数据内（对齐 TortoiseSVN
-     * `m_dateFrom.SetRange(&min,&max)`），加载更多之后必须放宽它，否则用户无法选到新加载的日期。
-     * 用户没手动改过日期时，起止值也跟随数据范围走（否则新加载的更早条目会被日期过滤抹掉），
-     * 详见 [LogFilterPanel.syncDateRangeToData]。
-     */
-    private fun syncDateRangeToLoaded() {
-        val dates = loadedAll.mapNotNull { it.commitDate }
-        filterPanel.syncDateRangeToData(dates.minOrNull(), dates.maxOrNull())
-    }
-
-    /**
-     * 一批新数据到手后的统一处理：并入全集 → 校准日历 → 更新生效条件 → 重过滤 → 重绘。
-     *
-     * 四种入口（首屏 / +N / 全部显示 / 搜索扩充）共用，保证"列表内容"与"日期控件范围"
-     * 永远不会脱节——这正是旧实现里"日历停在首屏范围、列表已覆盖整条历史"的根因。
-     *
-     * 顺序很关键：**先**校准日历（起止值可能随数据范围变化），**再**据此更新生效条件，
-     * **最后**才重过滤。反过来做的话，新加载的更早条目会被上一轮的旧日期区间整批抹掉
-     * （表现为"点了 +100 但什么都没多出来"）。
+     * 三种入口（首屏 / +100 / +500）共用。日期区间维度已随第五轮移除，
+     * 因此这里不再需要"先校准日历再更新条件"的顺序约束。
      */
     private fun onDataLoaded(added: List<SvnChangeList>) {
         if (added.isNotEmpty()) {
             val existing = loadedAll.mapTo(HashSet()) { it.number }
             added.forEach { if (it.number !in existing) loadedAll.add(it) }
         }
-        // 日历对齐已加载数据范围（用户手动改过日期时只放宽可选范围）
-        syncDateRangeToLoaded()
-        // 只更新**日期维度**的生效条件：搜索词可能正被用户输入（防抖未到），
-        // 若在此处整体重建 filter，会把尚未提交的搜索词提前写进生效条件
-        val d = filterPanel.dateRangeFilter()
-        currentFilter = currentFilter.copy(
-            dateRangeEnabled = d.dateRangeEnabled,
-            fromDate = d.fromDate,
-            toDate = d.toDate,
-        )
         applyFilterToModel()
         refreshMergeStatus(added)
         refreshList()
@@ -588,77 +473,6 @@ class RevisionSelectDialog(
             ),
             EnhanceMergeBundle.message("title.enhance.merge"),
         )
-    }
-
-    /** 「全部显示」：循环加载剩余全部修订（后台，可取消），原始数据累积进 `loadedAll`。 */
-    private fun loadAll() {
-        if (loadingMore) return
-        // 总量触顶：不再向服务端拉取，并明确提示
-        if (loadedAll.size >= MAX_LOADED_ALL) {
-            loadLimitReached = true
-            updateStatus()
-            return
-        }
-        // 停掉在途的加载任务：新任务独占 loader 的游标
-        cancelLoadTask()
-        // 允许对「已判定到底」的游标再发一次确认请求，避免按钮点了没反应
-        loader.reopenIfExhausted()
-        loadingMore = true
-        refreshToolbar()
-        val token = reloadToken
-        val generation = loader.snapshot()
-
-        ProgressManager.getInstance().run(object : Task.Backgroundable(
-            context.project,
-            EnhanceMergeBundle.message("progress.loading.all"),
-            true,
-        ) {
-            private val added = ArrayList<SvnChangeList>()
-            private var myIndicator: ProgressIndicator? = null
-
-            override fun run(indicator: ProgressIndicator) {
-                // 总条数未知（取决于仓库有多少条），因此用"不确定进度 + 已加载计数"，
-                // 而不是伪造 fraction（官方要求：无法确定总量时不要编造进度百分比）。
-                indicator.isIndeterminate = true
-                myIndicator = indicator
-                loadIndicator.set(indicator)
-                var guard = 0
-                while (!loader.allLoaded && guard++ < MAX_LOAD_ALL_ROUNDS) {
-                    indicator.checkCanceled()
-                    // 总量触顶：停在这里并在状态栏提示（否则用户以为"已经到底了"）
-                    if (loadedAll.size + added.size >= MAX_LOADED_ALL) {
-                        loadLimitReached = true
-                        break
-                    }
-                    indicator.text2 = EnhanceMergeBundle.message(
-                        "progress.loading.all.count",
-                        added.size.toString(),
-                    )
-                    val page = loader.loadNextPageRaw(settings.pageSize, generation)
-                    if (page.isEmpty()) break
-                    added.addAll(page)
-                }
-            }
-
-            override fun onSuccess() {
-                if (token != reloadToken || isDisposed || context.project.isDisposed) return
-                onDataLoaded(added)
-            }
-
-            override fun onThrowable(error: Throwable) {
-                if (token != reloadToken || isDisposed || context.project.isDisposed) return
-                // 被新任务取消：静默丢弃，不弹错误框
-                if (error is ProcessCanceledException) return
-                showLoadError(error)
-            }
-
-            override fun onFinished() {
-                loadIndicator.compareAndSet(myIndicator, null)
-                if (token != reloadToken || isDisposed || context.project.isDisposed) return
-                loadingMore = false
-                refreshToolbar()
-            }
-        })
     }
 
     private fun refreshToolbar() {
@@ -688,7 +502,7 @@ class RevisionSelectDialog(
         // 快照在 EDT 上取：只是引用拷贝（O(n) 但极快），避免后台遍历时集合被 EDT 改动
         val snapshot = loadedAll.toList()
         ApplicationManager.getApplication().executeOnPooledThread {
-            val filtered = if (filter.isFiltering()) {
+            val filtered = if (filter.hasSearchText) {
                 snapshot.filter { filter.matches(it) }
             } else {
                 snapshot
@@ -698,6 +512,8 @@ class RevisionSelectDialog(
                     if (token != reloadToken || isDisposed || context.project.isDisposed) return@invokeLater
                     model.setItems(filtered.toMutableList())
                     lastMatchCount = filtered.size
+                    // 搜索框同行右侧的计数标签：匹配 M / 已加载 N
+                    searchField.updateCount(filtered.size, snapshot.size)
                     updateStatus()
                 },
                 ModalityState.any(),
@@ -721,7 +537,8 @@ class RevisionSelectDialog(
      * `OnBnClickedShowAll` 才向服务端要更多，且**必须用户显式点击**。
      */
     private fun onFilterChanged() {
-        currentFilter = filterPanel.buildFilter()
+        // 搜索词唯一来源 = 表格上方显式搜索框；空词 = 不过滤
+        currentFilter = LogFilter(searchField.currentText())
         // 过滤令牌递增：让**在途的过滤结果**（后台线程）作废，避免旧条件的结果覆盖新条件。
         // 注意**不动** reloadToken：那会让在途的加载任务被丢弃（数据丢失 + 游标跳过修订）
         filterToken++
@@ -730,29 +547,7 @@ class RevisionSelectDialog(
     }
 
     /**
-     * 「重新整理」：清空已加载集合并从 HEAD 重查第一页。
-     *
-     * 这是**唯一**会清空并重新拉取的动作（用户显式要求"重新查一遍仓库"）：
-     * 过滤条件变化只做重过滤（零请求）。
-     */
-    private fun reloadAll() {
-        if (loadingMore) return
-        cancelLoadTask()
-        val token = ++reloadToken
-        loadedAll.clear()
-        mergeStatusMap.clear()
-        loadLimitReached = false
-        lastMatchCount = 0
-        loader.reset()
-        model.setItems(mutableListOf())
-        updateStatus()
-        loadingMore = true
-        refreshToolbar()
-        runFirstPage(token)
-    }
-
-    /**
-     * 首屏加载：只取一页。命中不足由后续「+N」/「全部显示」补齐（**不自动**向后扫描）。
+     * 首屏加载：只取一页。命中不足由用户显式「+100 / +500」补齐（**不自动**向后扫描）。
      */
     private fun runFirstPage(token: Int) {
         val generation = loader.snapshot()
@@ -932,99 +727,16 @@ class RevisionSelectDialog(
             .mapNotNull { list.getByPath(it) }
     }
 
+    /**
+     * 刷新派生状态：OK 按钮可用性 + 工具栏动作可用性。
+     *
+     * 底部自定义状态栏已随第五轮整体移除（原版亦无）；过滤命中数改由表格上方
+     * 搜索框同行右侧的计数标签展示（见 [RevisionSearchField.updateCount]）。
+     */
     private fun updateStatus() {
-        val selected = selectedChangeLists()
-        // 选集清空时立即归零，不必等防抖任务（否则"取消全选"后数字还会悬着 200ms）
-        if (selected.isEmpty()) pathCount = 0
-        refreshStatusLabel(selected)
-        isOKActionEnabled = selected.isNotEmpty()
+        isOKActionEnabled = selectedChangeLists().isNotEmpty()
         // 「加载更多」的可用状态依赖 allLoaded / loadingMore
         refreshToolbar()
-        schedulePathCountRecalc()
-    }
-
-    /** 只刷新状态栏文字；不重算「已选路径数」（重算由 [schedulePathCountRecalc] 防抖触发）。 */
-    private fun refreshStatusLabel(selected: List<SvnChangeList> = selectedChangeLists()) {
-        if (!::statusLabel.isInitialized) return
-        val base = when {
-            // 加载中且暂无结果：说"没有匹配"是误导（数据还没到齐），与旧实现混为一谈的根源
-            model.rowCount == 0 && loadingMore -> EnhanceMergeBundle.message("status.loading")
-            model.rowCount == 0 && currentFilter.isFiltering() -> EnhanceMergeBundle.message("status.no.match")
-            else -> {
-                // 范围取 min/max 而不是首尾行：**不依赖列表按修订号降序**这个未言明的假设
-                // （服务端返回顺序并无契约保证，一旦乱序就会显示成 "r952 – r1203" 这种倒挂）
-                val numbers = model.items.map { it.number }
-                val newest = numbers.maxOrNull()
-                val oldest = numbers.minOrNull()
-                val range = if (newest == null || oldest == null) "-" else {
-                    EnhanceMergeBundle.message(
-                        "status.revision.range",
-                        newest.toString(),
-                        oldest.toString(),
-                    )
-                }
-                EnhanceMergeBundle.message(
-                    "status.revision.select",
-                    model.rowCount.toString(),
-                    range,
-                    selected.size.toString(),
-                    pathCount.toString(),
-                )
-            }
-        }
-        statusLabel.text = buildString {
-            append(base)
-            // 搜索命中不足：明确告诉用户"还有更多，只是我们不会自动去拉"，
-            // 否则会被误解为"仓库里就这么点内容"（TortoiseSVN 同样是用户手动 Next/Show all）。
-            if (currentFilter.hasSearchText && !loader.allLoaded && loadedAll.isNotEmpty() &&
-                lastMatchCount < loadedAll.size
-            ) {
-                append(' ')
-                append(
-                    EnhanceMergeBundle.message(
-                        "status.search.partial",
-                        loadedAll.size.toString(),
-                        lastMatchCount.toString(),
-                    ),
-                )
-            }
-            // 触顶提示：必须明确告诉用户"还有更多，只是我们不再拉了"
-            if (loadLimitReached) {
-                append(' ')
-                append(EnhanceMergeBundle.message("status.load.limit", MAX_LOADED_ALL.toString()))
-            }
-        }
-    }
-
-    /**
-     * 排一次「已选路径数」重算（防抖：先取消未触发的请求，再排一个新的）。
-     *
-     * 为什么不能增量累加：同一文件在多个选中修订里都被改动时，`collectChanges` 会把它们
-     * **合并成一条**（`CommittedChangesTreeBrowser.zipChanges`），所以"各修订路径数之和"
-     * 并不等于合并后的条数，只能整体重算。
-     */
-    private fun schedulePathCountRecalc() {
-        pathCountAlarm.cancelAllRequests()
-        pathCountAlarm.addRequest(
-            {
-                if (isDisposed || context.project.isDisposed) return@addRequest
-                val count = selectedChangeLists().let { if (it.isEmpty()) 0 else collectChanges(it).size }
-                if (count == pathCount) return@addRequest
-                pathCount = count
-                refreshStatusLabel()
-            },
-            PATH_COUNT_DEBOUNCE_MS,
-        )
-    }
-
-    override fun createSouthAdditionalPanel(): JPanel {
-        statusLabel = JBLabel("")
-        statusLabel.border = JBUI.Borders.emptyTop(4)
-        updateStatus()
-        // 「重新整理 / 全部显示」已按需求移到顶部工具栏，底部只保留状态文字
-        val panel = JPanel(BorderLayout())
-        panel.add(statusLabel, BorderLayout.CENTER)
-        return panel
     }
 
     /**
@@ -1039,33 +751,32 @@ class RevisionSelectDialog(
     // ------------------------------------------------------------- renderer
 
     /**
-     * 单行渲染：**状态图标 + 复选框 + 自绘文本**（版本号 / 作者 / 日期 / 提交说明）。
+     * 单行渲染：与原版 `ToBeMergedDialog.MyListCellRenderer` 同构——
+     * `JCheckBox`(WEST) + 平台 `CommittedChangeListRenderer`(CENTER)。
      *
-     * 自绘而非复用 `CommittedChangeListRenderer` 的原因：只有自绘才能按
-     * [LogFilter.highlightRanges] 对**命中片段**做分段着色（TortoiseSVN 式高亮）。
-     * 状态图标（已合并 / 外来 / 刷新中）来自原版 `ListMergeStatus.icon`，在 [refreshMergeStatus] 中计算。
+     * 复选框必须贴单元格最左：`installCheckboxClick()` 的命中区从 `cell.x` 起算一个复选框宽
+     * （原版同构），右移会让"点到的位置"与"判定命中的位置"错位（T8 踩坑结论）。
+     *
+     * 状态图标经 [CommittedChangeListDecorator] provider 提供（与原版一致）：
+     * 开启「计算已合并状态」时取 `mergeStatusMap`（缺省 REFRESHING），关闭时返回 null。
      */
-    private inner class RevisionCellRenderer : TableCellRenderer {
+    private inner class OriginalCellRenderer : TableCellRenderer {
         private val panel = JPanel(BorderLayout())
         private val checkBox = JCheckBox().apply {
             isEnabled = true
             isOpaque = false
         }
-        private val iconLabel = JLabel().apply {
-            isOpaque = false
-            border = JBUI.Borders.emptyRight(STATUS_ICON_GAP)
-        }
-        private val text = SimpleColoredComponent()
-        /**
-         * 图标 + 文本的组合面板，放在单元格 CENTER。
-         * 为什么单独套一层：复选框已占住 WEST，图标必须紧跟其后但不能再占 WEST，
-         * 否则复选框会被挤到列中间、点击命中区错位（T8 踩坑，见类注释）。
-         */
-        private val center = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(iconLabel, BorderLayout.WEST)
-            add(text, BorderLayout.CENTER)
-        }
+
+        private val changeListRenderer = CommittedChangeListRenderer(
+            context.project,
+            listOf(CommittedChangeListDecorator { list ->
+                if (settings.computeMergeStatus) {
+                    mergeStatusMap[list.number]?.icon ?: ListMergeStatus.REFRESHING.icon
+                } else {
+                    null
+                }
+            }),
+        )
 
         override fun getTableCellRendererComponent(
             table: JTable,
@@ -1076,80 +787,27 @@ class RevisionSelectDialog(
             column: Int,
         ): Component {
             panel.removeAll()
-            text.clear()
+            changeListRenderer.clear()
 
             if (value is SvnChangeList) {
+                changeListRenderer.renderChangeList(table, value)
+
                 val bg = if (isSelected) UIUtil.getTableSelectionBackground(true) else UIUtil.getTableBackground()
                 val fg = if (isSelected) UIUtil.getTableSelectionForeground(true) else UIUtil.getTableForeground()
-                val normal = if (isSelected) SimpleTextAttributes.REGULAR_ATTRIBUTES
-                else SimpleTextAttributes.GRAYED_ATTRIBUTES
-                val highlight = if (isSelected) HIGHLIGHT_SELECTED else HIGHLIGHT
 
-                text.background = bg
-                text.foreground = fg
-                text.myBorder = null
+                changeListRenderer.background = bg
+                changeListRenderer.foreground = fg
                 checkBox.background = bg
                 checkBox.foreground = fg
                 panel.background = bg
                 panel.foreground = fg
 
-                // T8：状态图标（原版 ListMergeStatus.icon）；复选框固定在最左保证点击命中，图标紧随其后。
-                // 设置中关闭「计算已合并状态」时不显示图标（mergeStatusMap 同时保持为空）。
-                val status = if (settings.computeMergeStatus) {
-                    mergeStatusMap[value.number] ?: ListMergeStatus.REFRESHING
-                } else {
-                    null
-                }
-                iconLabel.icon = status?.icon
-                iconLabel.background = bg
-
-                val filter = currentFilter
-                fun field(field: LogFilterField, body: String) {
-                    if (body.isEmpty()) return
-                    val ranges =
-                        if (filter.isFieldMatched(value, field)) filter.highlightRanges(body) else emptyList()
-                    appendHighlighted(text, body, ranges, normal, highlight)
-                }
-
-                field(LogFilterField.REVISION, value.number.toString())
-                text.append(FIELD_SEPARATOR)
-                field(LogFilterField.AUTHOR, value.committerName)
-                text.append(FIELD_SEPARATOR)
-                field(
-                    LogFilterField.DATE,
-                    value.commitDate?.let { currentFilter.dateText(it) } ?: "",
-                )
-                text.append(FIELD_SEPARATOR)
-                field(LogFilterField.MESSAGE, value.comment)
-
                 checkBox.isSelected = wiseSelection.isSelected(value.number)
                 panel.add(checkBox, BorderLayout.WEST)
-                panel.add(center, BorderLayout.CENTER)
+                panel.add(changeListRenderer, BorderLayout.CENTER)
             }
             return panel
         }
-    }
-
-    /** 按命中区间分段着色；区间为空时整段用普通样式。 */
-    private fun appendHighlighted(
-        component: SimpleColoredComponent,
-        body: String,
-        ranges: List<IntRange>,
-        normal: SimpleTextAttributes,
-        highlight: SimpleTextAttributes,
-    ) {
-        if (ranges.isEmpty()) {
-            component.append(body, normal)
-            return
-        }
-        var pos = 0
-        for (range in ranges) {
-            if (range.first > pos) component.append(body.substring(pos, range.first), normal)
-            val end = (range.last + 1).coerceAtMost(body.length)
-            component.append(body.substring(range.first.coerceAtMost(body.length), end), highlight)
-            pos = end
-        }
-        if (pos < body.length) component.append(body.substring(pos), normal)
     }
 
     // ------------------------------------------------------ merge status (T8)
@@ -1245,19 +903,11 @@ class RevisionSelectDialog(
 
     private companion object {
         /**
-         * 「全部显示」最多循环多少批，防止极端情况下无休止加载。
-         * 100 是安全上限而非功能上限：正常仓库几十批内必然到底（`loader.allLoaded`），
-         * 只有"平台判定到底"失灵时才会撞到这个数。
-         */
-        const val MAX_LOAD_ALL_ROUNDS = 100
-
-        /**
-         * **已加载原始修订的总量上限**（跨「+N / 全部显示 / 重新整理」累计）。
+         * **已加载原始修订的总量上限**（跨「+N」累计）。
          *
          * 为什么需要总量闸：每条 `SvnChangeList` 都带着全部变更路径，
-         * 而**每次过滤都要遍历全集**（O(n) 次字符串拼接 + 可能的正则），n 越大越慢、
-         * 内存越多。触顶后不再向服务端拉取，并在状态栏明确提示
-         * （否则用户会误以为"仓库里就这么点修订"）。
+         * 而**每次过滤都要遍历全集**（O(n) 次字符串拼接），n 越大越慢、
+         * 内存越多。触顶后不再向服务端拉取（静默停止，原版亦无相关提示）。
          */
         const val MAX_LOADED_ALL = 20_000
 
@@ -1268,36 +918,17 @@ class RevisionSelectDialog(
         const val LOAD_MORE_SMALL = 100
         const val LOAD_MORE_LARGE = 500
 
-        /** 行高（经 JBUI 缩放）：比默认 16 高一点，容纳复选框 + 状态图标 + 文本。 */
-        const val ROW_HEIGHT = 22
-
         /** 左右分栏的分隔条宽度（经 JBUI 缩放）。 */
         const val SPLITTER_DIVIDER_WIDTH = 2
 
-        /** 状态图标与右侧文本的间距（经 JBUI 缩放）。 */
-        const val STATUS_ICON_GAP = 4
-
-        /** 行内各字段（版本号/作者/日期/说明）之间的分隔文本。 */
-        const val FIELD_SEPARATOR = "  "
-
         /** 每算完多少行就重绘一次（避免每行都 repaint）。 */
         const val REPAINT_BATCH_SIZE = 10
-
-        /** 状态栏「已选路径数」的重算防抖间隔（毫秒）：连续勾选只在停手后重算一次。 */
-        const val PATH_COUNT_DEBOUNCE_MS = 200
 
         /** 工具栏的 place 标识：ActionToolbar 用它区分"同组件上的多个工具栏"。 */
         const val TOOLBAR_PLACE = "SvnEnhanceMergeRevisions"
 
         /**
-         * 命中片段样式：加粗。
-         * 选中态单独一份是为了将来可差异化（例如选中态用反色），目前与原版一致都是加粗。
-         */
-        val HIGHLIGHT: SimpleTextAttributes = SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES
-        val HIGHLIGHT_SELECTED: SimpleTextAttributes = SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES
-
-        /**
-         * 原版同构的「单列」占位列：整行交给自定义 renderer 绘制。
+         * 原版同构的「单列」占位列：整行交给平台 renderer 绘制。
          * 列名为空字符串 —— 表头已隐藏，这个名字不会显示，但 ListTableModel 要求非 null。
          */
         val FAKE_COLUMN: ColumnInfo<SvnChangeList, SvnChangeList> =

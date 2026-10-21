@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![JetBrains Marketplace](https://img.shields.io/badge/Marketplace-SVN%20Enhance%20Merge-orange)](https://plugins.jetbrains.com/)
 
-一个 **独立的 IntelliJ IDEA 增强插件**：在 IDEA 内置 Subversion 插件之上，提供 TortoiseSVN「Show Log / merge revisions」式的**逐版本勾选合并**——实时过滤的修订列表、每行的合并状态、右侧变更文件一览，确认后走**与原版「Merge From」完全一致**的合并链路。
+一个 **独立的 IntelliJ IDEA 增强插件**：在 IDEA 内置 Subversion 插件之上，提供**与原版「Merge From → Quick Manual Select」界面一致**的逐版本勾选合并——并在表格上方增加**关键词搜索过滤框**，解决版本过多、时间跨度大时只能逐个滚动查找的问题；合并执行走**与原版「Merge From」完全一致**的链路。
 
 > 本插件 **不 fork、不修改** IDEA 内置 Subversion 插件（svn4idea）源码，仅依赖其公开 API，可随 IDEA 正常构建与升级。
 
@@ -42,7 +42,7 @@
 Working Copies Information 面板 → Enhance Merge… 链接
   └─ ① SelectBranchPopup          复用原版分支选择弹窗（trunk / branches / Configure Branches…）
        └─ ② MergeVariantDialog     合并方式（Revision Select / Cancel）
-            └─ ③ RevisionSelectDialog   修订列表（实时过滤 + 分页 + 合并状态）   ← 本插件核心
+            └─ ③ RevisionSelectDialog   修订列表（原版布局 + 关键词搜索过滤 + 分页 + 合并状态）   ← 本插件核心
                  └─ ④ MergeExecutor     复用原版 SvnIntegrateChangesTask        ← 与原版一致
                       1) LocalChangesPromptTask   本地改动与合并路径相交时的原版提示
                       2) SvnIntegrateChangesTask  进度条 / 冲突解决 / 更新信息树
@@ -50,16 +50,16 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 ### 修订选择界面（核心增强）
 
+界面布局、行渲染、工具栏（全选 / 全不选 / +100 / +500）、右栏变更树均与原版 `ToBeMergedDialog` 一致；**唯一新增**是表格上方独立一行的关键词搜索框。
+
 | 能力 | 说明 |
 |---|---|
-| 实时过滤 | TortoiseSVN 语法：空格分词，`-词` 排除、`+词` 或匹配、`"短语"`、`!` 取反；可勾选 Message / Path / Author / Revision / Bug-ID / Date 字段，支持正则与大小写敏感。**搜索框只做文本匹配**，且**只过滤已加载的修订**（不自动向服务器要更多；命中不足时可点「+100 / +500 / 全部显示」继续加载） |
-| 日期区间 | `From` / `To` 日历（点击即弹日历，**周一在首列、周日在末列**），**纯客户端**按提交日期过滤；对话框打开时默认覆盖已加载数据的提交日期范围，日历可选范围也锁在该范围内；改日期同样**不触发任何服务器请求** |
-| 分页加载 | 首屏 + 「+100 / +500 / 全部显示」实时向仓库翻页（游标分页，单通道），不用本地缓存 |
+| 关键词搜索过滤 | 表格上方显式搜索框；匹配范围 = **全字段**（提交说明 + 全部变更路径 + 作者 + 版本号 + 日期文本）；多关键词**空格分隔取且**，子串匹配、**大小写不敏感**；`Esc` / `✕` 清空恢复。同行右侧显示「匹配 M / 已加载 N」 |
+| 过滤范围 | **只过滤已加载的修订**（纯客户端，零服务器请求）；命中不足时点「+100 / +500」加载更多，新加载数据同样按当前关键词过滤 |
+| 分页加载 | 首屏 + 「+100 / +500」实时向仓库翻页（游标分页，跟踪已加载全集的最早修订号，过滤后不跳段） |
 | 合并状态 | 每行显示 已合并 ✔ / 外来修订（无图标）/ 计算中 图标；右栏对**已合并**文件追加 `[Already merged]` |
 | 变更文件 | 右侧 `CommittedChangesBrowser` 展示所选修订的变更路径，支持 `Ctrl+D` 查看差异 |
-| 快速搜索 | 列表内直接输入文字，按提交说明定位行 |
 | 勾选 | 复选框在行首最左，鼠标点击或 `Space` 键切换；全选 / 全不选；稀疏语义（全选后排除个别）跨翻页保留 |
-| 实时汇总 | 底部状态栏显示版本数、修订区间、已选数、涉及路径数 |
 
 ### 合并执行：与原版逐字节一致
 
@@ -127,10 +127,9 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 5. **④ 选择修订**：
    - 勾选需要合并的版本（鼠标点行首复选框，或选中行后按 `Space`）；
-   - 顶部过滤栏缩小范围：`By ▾` 选字段、搜索框输入关键词（支持 `-排除`、`+或`、`"短语"`、`!` 取反，**只做文本匹配**）、`From/To` 限定日期（点击日期框即弹出日历，周一在首列、周日在末列）；搜索只过滤**已加载**的修订，命中不足时点「+100 / +500 / 全部显示」继续加载（不会自动请求服务器）；
-   - 「+100 / +500 / 全部显示」继续向后翻页；`Refresh` 按当前条件重查；
-   - 列表内直接输入文字可快速定位到匹配提交；选中行后 `Ctrl+D` 查看该修订差异；
-   - 底部状态栏实时确认：「显示 N 个版本（rA–rB）— 已选 M 个，包含 K 个路径」。
+   - 表格上方的**搜索框**输入关键词缩小范围：多关键词空格分隔取且，匹配提交说明 / 路径 / 作者 / 版本号 / 日期（大小写不敏感）；搜索只过滤**已加载**的修订，命中不足时点「+100 / +500」继续加载（不会自动请求服务器），新加载数据同样按当前关键词过滤；
+   - 「+100 / +500」继续向后翻页；
+   - 选中行后 `Ctrl+D` 查看该修订差异。
 
 6. **⑤ 执行合并**：点击 `Merge Selected` →
    - 若工作副本有与待合并路径相交的**本地改动**，先弹原版提示（搁置 / 查看 / 继续 / 取消）；
@@ -150,8 +149,8 @@ Working Copies Information 面板 → Enhance Merge… 链接
 | 能力 | 使用的内置插件 API |
 |---|---|
 | 分支选择 | `SelectBranchPopup.showForBranchRoot(...)` + `SvnBranchConfigurationNew`（原版弹窗，零自绘） |
-| 修订日志 | `MergeCalculatorTask.loadChangeLists(ctx, cursor, size)`（游标分页，单通道；日期区间与搜索词均为客户端过滤，不再走 `SvnCommittedChangesProvider`） |
-| 列表渲染 | `TableView` + `ListTableModel` + `CommittedChangesBrowser` + `CommittedChangesTreeBrowser.collectChanges` |
+| 修订日志 | `MergeCalculatorTask.loadChangeLists(ctx, cursor, size)`（游标分页，单通道；搜索词为客户端过滤，不改变服务端查询范围） |
+| 列表渲染 | `TableView` + `ListTableModel` + `CommittedChangeListRenderer`（原版行渲染）+ `CommittedChangesBrowser` + `CommittedChangesTreeBrowser.collectChanges` |
 | 勾选语义 | `QuantitySelection<Long>`（稀疏表示：全选后排除个别） |
 | 合并状态 | `OneShotMergeInfoHelper(context)`（`MergeChecker`）+ `ListMergeStatus`（图标）/ `ChangeNodeDecorator`（`[Already merged]`） |
 | 合并执行 | `SvnIntegrateChangesTask` + `ChangeListsMergerFactory(lists, false, false, true)` + `LocalChangesPromptTask` |
@@ -160,17 +159,13 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 ### 关键实现点
 
-1. **两种日志加载模式**（`LogPageLoader`，均带可取消的后台任务）
+1. **日志加载与搜索过滤**（`LogPageLoader` + `RevisionSearchField` + `LogFilter`，均带可取消的后台任务）
 
-   | 模式 | 触发 | 数据来源 | 分页 |
-   |---|---|---|---|
-   | 游标模式（单通道） | 始终 | `MergeCalculatorTask.loadChangeLists`（按修订号游标翻页） | 服务端分页，单次翻页补页 ≤10 批 |
-
-   两个过滤维度只影响**客户端展示**，**不切换查询通道、不触发服务器请求**：
-   - **搜索 / 日期区间**：纯客户端过滤（日期区间默认开启、值 = 已加载数据的提交日期，可选范围锁在数据内）；
-   - 搜索命中不足时**不自动**向服务器要更多，状态栏提示可点「+100 / +500 / 全部显示」继续加载（对齐 TortoiseSVN：只有 Next / Show all 才请求）。
-
-   向服务器要数据只有三个入口：**首屏**、**「+100 / +500 / 全部显示」**、**「重新整理」**（清空并从 HEAD 重查）。
+   | 环节 | 行为 |
+   |---|---|
+   | 加载 | 游标分页（单通道）：首屏 + 「+100 / +500」，游标 = 已加载全集的最早修订号 |
+   | 过滤 | 纯客户端：只作用于已加载集合，**零服务器请求**；命中不足不自动请求，由用户显式「+100 / +500」加载更多 |
+   | 服务端入口 | 仅两个：**首屏**、**「+100 / +500」**（搜索词不改变服务端查询范围） |
 
 2. **合并状态**（T8）后台线程批量调 `MergeChecker.checkList()`，映射 `MERGED→MERGED` / `NOT_EXISTS→ALIEN` / 其余→`REFRESHING`，每 10 条批量重绘一次；图标渲染在**复选框之后**（命中区 `[cell.x, cell.x+checkboxWidth]` 与视觉对齐）。右栏 `[Already merged]` 取 `getNotMergedPaths` 的补集。
 
@@ -204,26 +199,25 @@ SubversionEnhance/
 │   ├── EnhanceMergeBundle.kt             # 语言包感知的文案 bundle（英文基包 / _zh_CN）
 │   ├── flow/MergeFlow.kt                # 全流程编排：分支弹窗 → 方式确认 → 版本选择 → 合并
 │   ├── log/LogPageLoader.kt             # 修订日志分页加载（游标单通道 + 世代号防串）
-│   ├── log/LogFilter.kt                 # 过滤条件模型 + TortoiseSVN 搜索语法
+│   ├── log/LogFilter.kt                 # 过滤条件模型（关键词 + 全字段 + 空格 AND + 大小写不敏感）
 │   ├── merge/MergeExecutor.kt           # 合并执行（LocalChangesPromptTask + SvnIntegrateChangesTask）
 │   ├── settings/EnhanceMergeSettings.kt  # 设置状态（applicationService，持久化 svnEnhanceMerge.xml）
 │   ├── settings/EnhanceMergeConfigurable.kt # 设置页 UI（Version Control 分组）
-│   ├── ui/RevisionSelectDialog.kt       # 修订选择对话框（renderer / 分页 / 合并状态 / 快速搜索）
-│   ├── ui/LogFilterPanel.kt             # 顶部过滤栏（By ▾ / 搜索框 / 起止日历）
+│   ├── ui/RevisionSelectDialog.kt       # 修订选择对话框（原版布局 / CommittedChangeListRenderer / 分页 / 合并状态）
+│   ├── ui/RevisionSearchField.kt        # 表格上方显式搜索框（防抖 / ✕ / Esc / 计数标签）
 │   ├── ui/MergeVariantDialog.kt         # 合并方式确认（Revision Select / Cancel）
 │   └── wcinfo/WcInfoLinkInjector.kt     # 向 Working Copies Information 面板注入 Enhance Merge 链接
 ├── src/main/resources/
 │   ├── META-INF/plugin.xml              # 插件描述（vendor / change-notes / depends / EP 注册）
 │   ├── messages/EnhanceMergeBundle*.properties  # 界面文案（en / zh_CN）
-│   ├── pluginIcon.svg / pluginIcon_dark.svg    # 插件图标 40×40（浅色 / 深色主题）
-│   └── THIRD-PARTY-LICENSES.txt        # 第三方许可全文（LGoodDatePicker，MIT）
+│   └── pluginIcon.svg / pluginIcon_dark.svg    # 插件图标 40×40（浅色 / 深色主题）
 └── src/test/kotlin/com/svn/revisionselect/
-    ├── LogFilterTest.kt                 # 过滤语义 24 用例（文本语法 / 字段 / 日期区间边界 / 纯文本匹配 / 取反与高亮一致）
+    ├── LogFilterTest.kt                 # 过滤语义 8 用例（空词 / 全字段 / AND / 大小写不敏感）
     ├── LogPageLoaderTest.kt             # 游标单通道分页 12 用例（世代号 / 补批 / MAX_BATCHES / reopenIfExhausted）
     ├── QuantitySelectionTest.kt         # 稀疏勾选 9 用例
     ├── EnhanceMergeBundleTest.kt        # 文案 bundle 3 用例（基包 / _zh_CN / 缺键回退）
-    ├── BundleKeysTest.kt                # 文案 key 双向对齐 4 用例
-    └── EnhanceMergeSettingsTest.kt      # 设置持久化与开关语义 8 用例
+    ├── BundleKeysTest.kt                # 文案 key 对齐 3 用例（中英一致 / 非空 / 搜索框 key）
+    └── EnhanceMergeSettingsTest.kt      # 设置持久化 4 用例（pageSize 夹取 / 旧配置兼容 / 开关往返）
 ```
 
 ---
@@ -275,13 +269,8 @@ SubversionEnhance/
 
 | 项 | 默认值 | 说明 |
 |---|---|---|
-| 每页版本数 | `100` | 首屏与每次「加载更多」的条数（10–500），对齐 TortoiseSVN 的 `NumberOfLogs` |
+| 每页版本数 | `100` | 首屏与每次「+100 / +500」的条数（10–500），对齐 TortoiseSVN 的 `NumberOfLogs` |
 | 计算已合并状态 | 开 | 为每行显示已合并/外来/计算中图标，并在变更文件列表标记 `[Already merged]`；关闭后不读取 `svn:mergeinfo` |
-| Bug-ID 正则 | `[A-Z][A-Z0-9]+-\d+` | 勾选 Bug-IDs 过滤字段时从提交说明提取 Bug-ID；填错时自动回退默认值 |
-| 默认日期范围（天） | `0` | >0 时打开对话框会把起止日期**覆盖**为「最近 N 天」（其余情况下日期区间默认开启、值 = 已加载数据的提交日期）；0 表示不限制（沿用上次手动选择的开关状态） |
-
-此外，过滤栏的**勾选字段、日期区间开关、正则/大小写开关**会自动沿用上次使用
-（同样存在 `svnEnhanceMerge.xml` 里；它们属于顺手记住的交互偏好，故不在设置页做 UI）。
 
 设置持久化于应用级 `svnEnhanceMerge.xml`，重启 IDE 后仍生效。界面语言跟随 IDE
 （未装语言包时为英文，装了中文语言包后自动切换中文）。
@@ -290,7 +279,7 @@ SubversionEnhance/
 
 ## 测试
 
-### 纯逻辑单元测试（46 用例，不连仓库）
+### 纯逻辑单元测试（39 用例，不连仓库）
 
 ```bash
 ./gradlew.bat test
@@ -298,14 +287,14 @@ SubversionEnhance/
 
 | 测试类 | 用例数 | 覆盖 |
 |---|---|---|
-| `LogFilterTest` | 24 | 空条件、单/多词 AND、`-` 排除、`+` 或组、引号短语、`!` 取反、大小写敏感、正则模式（含非法正则）、Bug-ID 字段（默认/自定义正则）、日期区间（默认开 / 客户端过滤 / 含边界）、纯文本匹配（忽略日期）、取反与高亮一致、含 `-` 文本不被误判为区间、高亮区间、字段选择 |
+| `LogFilterTest` | 8 | 空词不过滤、全字段命中（说明/作者/路径/版本号/日期）、多词 AND、大小写不敏感 |
 | `LogPageLoaderTest` | 12 | 游标单通道：推进 / 到底 / 整页保守判定 / 补批 / `MAX_BATCHES` 上限 / `reopenIfExhausted`；**世代号**：stale 世代号不发包、reset 后旧在飞任务作废 |
-| `EnhanceMergeBundleTest` | 3 | 文案 bundle：基包 / `_zh_CN` / 缺键回退（含 properties ↔ 代码引用双向对齐守护） |
-| `BundleKeysTest` | 4 | 文案 key：properties ↔ 代码引用双向对齐 |
-| `EnhanceMergeSettingsTest` | 8 | 设置持久化：默认日期范围语义、开关状态沿用、日期区间开关默认值 |
+| `EnhanceMergeBundleTest` | 3 | 文案 bundle：基包 / `_zh_CN` / 缺键回退 |
+| `BundleKeysTest` | 3 | 文案 key：中英包集合一致、取值非空、搜索框 key 存在 |
+| `EnhanceMergeSettingsTest` | 4 | 设置持久化：pageSize 夹取、旧配置（含已删字段）兼容、开关往返 |
 | `QuantitySelectionTest` | 9 | 全不选起点的增删清、全选起点的排除与恢复、`areAllSelected()` 的原版语义（起点为全选时恒为 `true`，本插件 `selectedChangeLists()` 依赖该行为走排除集） |
 
-> 测试通过 `cursorSource` / `dateRangeSource` 注入点喂假数据，不连仓库；
+> 测试通过 `cursorSource` 注入点喂假数据，不连仓库；
 > `SvnChangeList` / `MergeContext` 用 mockk 只 stub 需要的 getter。
 
 ### 官方 API 兼容性校验（Plugin Verifier）
@@ -334,7 +323,7 @@ deprecation 会把构建卡死）。
 
 ### 人工全流程验收
 
-在沙箱中走一遍：分支弹窗 → 版本选择（状态图标 / 复选框点击 / 快速搜索 / `Ctrl+D` diff）→ `Merge Selected`（本地改动提示 → 进度 → 冲突解决 → 更新信息树），完成一次真实合并。
+在沙箱中走一遍：分支弹窗 → 版本选择（搜索框过滤 / 状态图标 / 复选框点击 / `Ctrl+D` diff）→ `Merge Selected`（本地改动提示 → 进度 → 冲突解决 → 更新信息树），完成一次真实合并。
 
 ---
 
@@ -369,8 +358,8 @@ deprecation 会把构建卡死）。
    其中 `SvnBranchConfigurationNew` 已由 Java 改写为 Kotlin，`getRelativeUrl` 返回值改为可空——
    调用处已做 null 防护。
 2. **IDEA 平台 API**：`com.intellij.*` 在 since/until 范围内由平台兼容性承诺覆盖。
-   唯一确认变化的是 `com.intellij.ui.TableViewSpeedSearch`（新版平台增加了双参构造重载），
-   本插件使用 2022.1 的单参构造，并已加降级防御——不可用时仅关闭快速搜索，不影响其他功能。
+   第五轮起不再使用 `com.intellij.ui.TableViewSpeedSearch`（隐式 speed search 已移除，
+   搜索改由表格上方显式搜索框承担）；行渲染直接用 `CommittedChangeListRenderer`（2022.1 起签名稳定）。
 3. **Kotlin 标准库**：按官方要求不随插件分发（`kotlin.stdlib.default.dependency=false`），
    运行时由 IDEA 核心 `lib/3rd-party-rt.jar` 提供。已实测 2022.1 沙箱加载正常
    （`gradlew verifyOnIde -PideaVersion=2022.1` → PASS）。
@@ -431,14 +420,7 @@ deprecation 会把构建卡死）。
 
 ## 第三方许可
 
-本插件在安装包中**重新分发**以下第三方组件：
-
-| 组件 | 版本 | 用途 | 许可 |
-|---|---|---|---|
-| [LGoodDatePicker](https://github.com/LGoodDatePicker/LGoodDatePicker) | 11.2.1 | 过滤栏的 From / To 日期选择控件 | MIT |
-
-许可全文见安装包内的 `THIRD-PARTY-LICENSES.txt`（上游 jar 本身未内置 LICENSE，故由本插件补齐），
-插件描述页（Marketplace）亦已注明。
+本插件**不再分发任何第三方组件**（第五轮起移除 LGoodDatePicker 依赖，日期区间功能已删除）。
 
 以下组件**不分发**，仅在运行时使用 IDE 提供的：
 
@@ -455,9 +437,6 @@ deprecation 会把构建卡死）。
 本项目采用 [MIT License](LICENSE)。版本号遵循语义化版本，变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 Copyright (c) 2026 wxingfu
-
-> 注：插件在安装包中再分发 LGoodDatePicker（MIT），其许可全文见 `THIRD-PARTY-LICENSES.txt`
-> （见[第三方许可](#第三方许可)）。
 
 ---
 
@@ -502,6 +481,6 @@ marketplaceToken=<token>
 发布前请确认：
 
 - [x] 元数据齐全：`pluginIcon.svg` / `pluginIcon_dark.svg`（已在插件目录根部）、`<vendor>` 的 email 与 url、`<change-notes>`
-- [x] 许可说明：`THIRD-PARTY-LICENSES.txt` 随包分发，描述页已注明 LGoodDatePicker(MIT)
+- [x] 许可说明：无第三方组件再分发（LGoodDatePicker 依赖已移除），描述页已同步
 - [x] 兼容性：`runPluginVerifier` 对 `IC-2022.1` 结论为 Compatible
 - [ ] 人工走一遍真实合并（分支弹窗 → 版本选择 → 勾选 → 合并）

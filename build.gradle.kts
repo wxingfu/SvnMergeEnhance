@@ -53,11 +53,6 @@ repositories {
     gradlePluginPortal()
     google()
     mavenCentral()
-    // JitPack：合法的 Maven 仓库（按 GitHub 标签按需构建）。
-    // 本项目的 LGoodDatePicker 当年只发布在已关停的 JCenter（版本 11.2.1），Maven Central 无此构件；
-    // 其 GitHub 发布标签为 `v11.2.1-Standard`，只能从这里获取。CI 关了阿里云镜像，
-    // 故必须显式声明，否则 `runPluginVerifier` / 构建会因解析不到而 404 失败。
-    maven { url = uri("https://jitpack.io") }
 }
 
 intellij {
@@ -106,17 +101,6 @@ kotlin {
 
 
 dependencies {
-    // 日期选择控件：过滤栏的 From/To 日历。
-    // 选它而非 JXDatePicker：LGoodDatePicker 的 DatePickerSettings 可逐项配颜色/边框，
-    // 能完全融入 IDEA 主题（见 LogFilterPanel.createDatePicker）。
-    //
-    // ⚠️ 来源说明（非 Maven Central）：该库当年只发布在 **JCenter**（版本号 11.2.1），JCenter 已关停，
-    // 故 Maven Central 查无此构件；其在 GitHub 上的发布标签是 `v11.2.1-Standard`，
-    // 通过 **JitPack**（`https://jitpack.io`，合法 Maven 仓库，按标签按需构建）获取，
-    // 故坐标为 `com.github.lgooddatepicker:LGoodDatePicker:v11.2.1-Standard`。
-    // 必须在本文件 repositories 中声明 jitpack.io（CI 关了阿里云镜像，否则解析 404）。
-    // 该构件无传递依赖（POM <dependencies> 为空），MIT 许可见 THIRD-PARTY-LICENSES.txt。
-    implementation("com.github.lgooddatepicker:LGoodDatePicker:v11.2.1-Standard")
     // 纯逻辑单测：kotlin-test（JUnit5）+ mockk。
     // mockk 的用途：SvnChangeList / MergeContext 的构造需要 SvnVcs（IDE 组件），
     // 单测里只 stub 过滤/分页真正读到的 getter，避免为测试去启动 IDE。
@@ -146,7 +130,7 @@ tasks.withType<PatchPluginXmlTask> {
 // `buildPlugin` 任务本身就是 Zip（IPGP 已 `into(pluginName)`），直接往它追加文件即可落到正确位置。
 tasks.named<BuildPluginTask>("buildPlugin") {
     from("src/main/resources") {
-        include("pluginIcon.svg", "pluginIcon_dark.svg", "THIRD-PARTY-LICENSES.txt")
+        include("pluginIcon.svg", "pluginIcon_dark.svg")
     }
 }
 

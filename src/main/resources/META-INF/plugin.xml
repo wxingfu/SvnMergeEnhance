@@ -39,23 +39,24 @@
 "Show Log / merge revisions".</p>
 <ul>
   <li>Reuses the built-in Subversion plugin's branch picker and merge engine (no forked code).</li>
-  <li>Revision list with live filtering (message / path / author / revision / Bug-ID / date range),
-      speed search and inline diff.</li>
+  <li>Revision list with a keyword search box on top (filters loaded revisions by
+      message / path / author / revision / date) and inline diff.</li>
   <li>Per-revision merge status (already merged / alien / calculating) plus "[Already merged]"
       markers on the affected files.</li>
-  <li>Loads revisions page by page directly from the repository.</li>
+  <li>Loads revisions page by page directly from the repository (+100 / +500).</li>
   <li>All pre-merge steps (local changes prompt, progress, conflict resolution, result tree)
       behave exactly like the IDE's built-in "Merge From".</li>
 </ul>
 
 <h3>中文</h3>
-<p>在 IDEA 内置 Subversion 插件之上，提供 TortoiseSVN「Show Log / merge revisions」式的
-<b>逐版本勾选合并</b>：实时过滤的修订列表、每行的合并状态、右侧变更文件一览，
+<p>在 IDEA 内置 Subversion 插件之上，提供<b>与原版「Merge From → Quick Manual Select」
+界面一致</b>的逐版本勾选合并，并在表格上方增加<b>关键词搜索过滤框</b>：
+按提交说明 / 路径 / 作者 / 版本号 / 日期过滤已加载的修订，右侧为变更文件一览，
 确认后走<b>与内置「Merge From」完全一致</b>的合并链路。</p>
 <ul>
   <li>复用内置 Subversion 插件的分支选择弹窗与合并引擎，不 fork、不修改其源码。</li>
-  <li>修订列表支持实时过滤（提交说明 / 路径 / 作者 / 版本 / Bug-ID / 日期区间）、
-      版本区间过滤、快速搜索与内联差异（Ctrl+D）。</li>
+  <li>修订列表顶部有关键词搜索框（多关键词空格分隔取且，大小写不敏感），
+      匹配已加载的修订；分页加载 +100 / +500 与内联差异（Ctrl+D）。</li>
   <li>逐版本显示合并状态（已合并 / 外来 / 计算中），并在受影响的文件上标记「[已合并]」。</li>
   <li>分页直连仓库加载修订，不依赖本地缓存。</li>
   <li>合并前的全部步骤（本地改动提示、进度条、冲突解决、结果树）均由内置插件负责，
@@ -66,10 +67,6 @@
 <p><b>Source code / 源码：</b>
 <a href="https://github.com/wxingfu/SvnMergeEnhance">github.com/wxingfu/SvnMergeEnhance</a> (MIT License).
 Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.</p>
-
-<p><b>Third-party / 第三方：</b>内置
-<a href="https://github.com/LGoodDatePicker/LGoodDatePicker">LGoodDatePicker</a>（MIT License）
-用于日期选择控件，许可全文见安装包内的 <code>THIRD-PARTY-LICENSES.txt</code>。</p>
     ]]></description>
 
     <change-notes><![CDATA[
@@ -79,8 +76,8 @@ Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.<
   <li>Initial release.</li>
   <li>Entry point: an "Enhance Merge..." link injected into
       <i>Version Controls | Subversion Working Copies Information</i>, right below "Merge From...".</li>
-  <li>Revision picking with TortoiseSVN-style filtering, paging (+100 / +500 / Show All),
-      speed search and per-revision merge status.</li>
+  <li>Revision picking in the built-in dialog's layout, with a keyword search box on top of
+      the list, paging (+100 / +500) and per-revision merge status.</li>
   <li>Settings page under <i>Settings | Version Control | SVN Enhance Merge</i>.</li>
   <li>English and Simplified Chinese UI.</li>
 </ul>
@@ -91,8 +88,8 @@ Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.<
   <li>首个版本。</li>
   <li>入口：在<i>版本控制 | Subversion 工作副本信息</i>面板的「Merge From…」下方注入
       「Enhance Merge…」链接。</li>
-  <li>逐版本勾选合并：TortoiseSVN 式过滤、分页加载（+100 / +500 / 全部显示）、
-      快速搜索，以及每个版本的合并状态图标。</li>
+  <li>逐版本勾选合并：沿用原版对话框布局，表格上方新增关键词搜索过滤框，
+      分页加载（+100 / +500），以及每个版本的合并状态图标。</li>
   <li>设置页：<i>Settings | Version Control | SVN Enhance Merge</i>。</li>
   <li>界面提供英文与简体中文。</li>
 </ul>

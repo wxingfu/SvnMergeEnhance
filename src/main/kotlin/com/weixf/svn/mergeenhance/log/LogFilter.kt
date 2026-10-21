@@ -6,328 +6,88 @@ import java.time.format.DateTimeFormatter
 import java.util.Date
 
 /**
- * 可勾选的过滤维度，对齐 TortoiseSVN「被过滤信息」下拉（`LOGFILTER_*` 位标）。
+ * 修订日志过滤条件（第五轮退化版：**单一搜索词 + 全字段 + 空格 AND**）。
  *
- * | 枚举 | TortoiseSVN 位标 | 含义 |
- * |---|---|---|
- * | [MESSAGE] | `LOGFILTER_MESSAGES` | 提交说明 |
- * | [PATH]    | `LOGFILTER_PATHS`    | 变更路径 |
- * | [AUTHOR]  | `LOGFILTER_AUTHORS`  | 作者 |
- * | [REVISION]| `LOGFILTER_REVS`     | 版本号 |
- * | [BUG_ID]  | `LOGFILTER_BUGID`    | Bug-ID（提交说明中形如 `PROJECT-123` 的片段）|
- * | [DATE]    | `LOGFILTER_DATE`     | 日期文本（与搜索词做子串匹配，区别于日期区间）|
+ * ## 语义
  *
- * 注：[DATE] 是「文本匹配日期字符串」；日期区间由独立的 [dateRangeEnabled] + [fromDate]/[toDate]
- * 控制，对应 TortoiseSVN 的 `LOGFILTER_DATERANGE`。
+ * 1. 搜索词按空格拆分为多个 token，**全部 AND**（每个词都必须出现在字段拼接串中）；
+ * 2. 子串匹配，**大小写不敏感**；
+ * 3. 匹配范围 = 全字段拼接串：提交说明 + **全部变更路径** + 作者 + 修订号 + 日期文本；
+ * 4. 空搜索词 = 不过滤。
  *
- * ## 三个维度彼此独立（对齐 TortoiseSVN）
+ * ## 为什么匹配全字段
  *
- * 1. **搜索框文本**：只做子串/正则匹配，**永不**被解析成版本区间。
- *    早期实现会用「文本形如 `10-20`」来推断版本区间，于是搜 `2026-10`（想按月份搜）
- *    被静默改写成「版本 [10, 2026]」，结果恒为空且无任何提示。TortoiseSVN 没有这种语法：
- *    它的搜索框里修订号只是被当作**普通文本**参与匹配（`LogDlgFilter.cpp` 的 `LOGFILTER_REVS`）。
- * 2. **日期区间**：纯**客户端**过滤，**不参与**任何远端查询。TortoiseSVN 同样如此——
- *    `m_tFrom`/`m_tTo` 只写进 `CLogDlgFilter`，而 filter 只用于 `m_logEntries.Filter(...)`
- *    内存过滤（`LogDlg.cpp` 的 `RecalculateShownList`）。
+ * 用户痛点原话："版本过多、时间跨度大时只能一个个版本寻找"。只搜提交说明会漏掉
+ * 按路径 / 作者 / 版本号 / 日期定位的场景（原版隐式 speed search 即只搜说明，正是其硬伤）。
  *
- * ⚠️ **版本区间维度已整体删除**（2026-10-20 第四轮，用户决策「不需要版本区间」）：
- * 原先的 [revFrom]/[revTo] 字段与独立的「版本区间」对话框一并移除，
- * 游标恒从 HEAD 开始（见 [LogPageLoader]）。
- */
-enum class LogFilterField(val id: String) {
-    MESSAGE("message"),
-    PATH("path"),
-    AUTHOR("author"),
-    REVISION("revision"),
-    BUG_ID("bugId"),
-    DATE("date"),
-}
-
-/**
- * 修订日志过滤条件，语义严格对齐 TortoiseSVN 的 `CLogDlgFilter`。
+ * ## 纯客户端
  *
- * ## 搜索框匹配语义
+ * 过滤只作用于**已加载集合**，零远端请求；命中不足时由用户显式「+100 / +500」加载更多。
  *
- * 1. 搜索框文本按**空格**拆分为多个 token；每个 token 可带前缀：
- *    - 无前缀 → 必须出现（AND）
- *    - `-` → 必须**不**出现（AND NOT）
- *    - `+` → 与同组 `+` token 取「任一出现」（OR）
- *    - `"..."` → 带空格的整段子串（内部 `""` 转义为一个 `"`）
- * 2. 所有被勾选字段的文本会被**拼接成一条**字符串，每个 token 在该字符串内做匹配
- *    （即「跨字段 OR、跨词 AND」——单个词只要出现在任一勾选字段即可）。
- * 3. 默认**大小写不敏感**；勾选 `Match case` 后敏感。
- * 4. 勾选 `Use regular expressions` 后，每个 token 作为独立正则，**全部**须匹配。
- * 5. 搜索框为空 → 文本维度不过滤。
- * 6. 整段以 `!` 开头 → 文本匹配结果取反（TortoiseSVN `negate`）。
+ * ## 历史沿革（勿再反复讨论）
  *
- * ## 判定顺序
- *
- * [matches] 与 TortoiseSVN 的 `CLogDlgFilter::operator()` 一致：**先硬边界、后文本**——
- * 日期区间 → 文本匹配。硬边界不满足时直接排除，不再做昂贵的文本匹配。
+ * - v2~第四轮：对齐 TortoiseSVN `CLogDlgFilter`，支持 `-`NOT / `+`OR / `"…"`短语 / `!`取反 /
+ *   正则 / 大小写开关 / By 字段勾选 / Bug-ID 字段 / 日期区间（第四轮又删了版本区间）；
+ * - **第五轮（2026-10-21）**：按用户决策「原版界面 + 一个显式搜索框」整体退化为本形态，
+ *   与之相关的 UI（过滤栏、日期控件）、设置项、文案、单测一并删除。
  */
 data class LogFilter(
     val searchText: String = "",
-    val fields: Set<LogFilterField> = LogFilterField.values().toSet(),
-    /**
-     * 对应 `LOGFILTER_DATERANGE`。
-     *
-     * 默认 **true**（对齐 TortoiseSVN 的 `m_selectedFilters(LOGFILTER_ALL)`：日期区间位默认就是开的）。
-     * 因为本插件的日期区间是**纯客户端**过滤、且默认值恒等于「已加载数据的 min/max 日期」，
-     * 「开着」与「关着」在首屏是等价的，不存在"控件显示已过滤、实际未过滤"的错位。
-     * 关闭开关则彻底不按日期裁剪（[matches] 里跳过日期判定）。
-     */
-    val dateRangeEnabled: Boolean = true,
-    val fromDate: Date? = null,
-    val toDate: Date? = null,
-    val useRegex: Boolean = false,
-    val caseSensitive: Boolean = false,
-    /** Bug-ID 提取正则（可在设置中修改；调用方负责在正则无效时回退默认值）。 */
-    val bugIdPattern: Regex = DEFAULT_BUG_ID_PATTERN,
 ) {
 
     val hasSearchText: Boolean get() = searchText.isNotBlank()
 
     /**
-     * 搜索正文：去掉整段 `!` 取反标记后的文本。
+     * 搜索词的 token 列表（**缓存**）。
      *
-     * `!` 是**整段取反**标记（TortoiseSVN 的 `negate`），不参与分词。
+     * 为什么必须缓存：判定每条修订都会用到，而扫描上万条时分词开销与匹配开销同量级。
+     * 分词结果只取决于不可变的 [searchText]，解析一次即可；`lazy` 默认同步，多线程访问安全。
      */
-    private val body: String = searchText.trim().let { if (it.startsWith("!")) it.substring(1) else it }
+    private val tokens: List<String> by lazy {
+        searchText.trim().split(WHITESPACE).filter { it.isNotEmpty() }
+    }
 
-    /** 整段是否为「取反」语义。 */
-    private val negate: Boolean = searchText.trim().startsWith("!")
-
-    /**
-     * 搜索词的 token 解析结果（**缓存**）。
-     *
-     * 为什么必须缓存：原先每判定**一条**修订都要重新分词一次，而扫描上万条时
-     * 分词开销与匹配开销同量级（每次都新建 List/Token）。分词结果只取决于
-     * 不可变的 [searchText]，解析一次即可；`lazy` 默认同步，多线程访问安全。
-     */
-    private val tokens: List<Token> by lazy { tokenize(body) }
-
-    fun hasDateRange(): Boolean = dateRangeEnabled && (fromDate != null || toDate != null)
-
-    /** 是否存在会改变结果集的条件。 */
-    fun isFiltering(): Boolean = hasDateRange() || hasSearchText
-
-    /**
-     * 单条日志是否命中。判定顺序：日期区间 → 文本。
-     *
-     * 日期区间是**客户端**判定，因此无论它由谁设置、什么时候设置，
-     * 都只影响"已加载数据的可见子集"，不会引起重新查询（见类文档「维度彼此独立」）。
-     */
+    /** 单条日志是否命中。空搜索词恒真。 */
     fun matches(list: SvnChangeList): Boolean {
-        // 1. 日期区间（硬边界）
-        if (dateRangeEnabled) {
-            val d = list.commitDate ?: return false
-            if (fromDate != null && d < fromDate) return false
-            if (toDate != null && d > toDate) return false
-        }
-        // 2. 文本匹配
-        return matchesText(list)
+        if (tokens.isEmpty()) return true
+        val haystack = buildCombined(list).lowercase()
+        return tokens.all { haystack.contains(it.lowercase()) }
     }
-
-    // ----------------------------------------------------- 文本匹配（核心）
 
     /**
-     * 只做**文本**维度匹配（跳过日期区间）。
+     * 把全部可匹配字段拼成一条串，token 在其中做子串匹配。
      *
-     * ## 用途
-     *
-     * 搜索命中与否只看文本；日期区间是**客户端**过滤的显示子集，
-     * 与"这条内容是否匹配搜索词"无关，分开判定语义更清晰。
-     *
-     * 顺带修掉一处**高亮与实际匹配不一致**的老问题：
-     * 旧实现里 [matches] 按去掉 `!` 的正文分词，而 [highlightRanges] 按原始
-     * `searchText` 分词（`!abc` 的 token 是 `!abc`），于是搜索 `!abc` 时
-     * 实际按 `abc` 匹配、高亮却按 `!abc` 找，两者对不上。
+     * 字段间以空格分隔，避免相邻字段的字符意外粘连成新词（如作者名尾 + 路径首）。
      */
-    fun matchesText(list: SvnChangeList): Boolean {
-        if (tokens.isEmpty()) return true
-        val result = matchText(list)
-        return if (negate) !result else result
-    }
-
-    private fun matchText(list: SvnChangeList): Boolean {
-        if (tokens.isEmpty()) return true
-        val combined = buildCombined(list)
-        return matchCombined(combined, tokens)
-    }
-
-    /** 把勾选字段的文本拼成一条，token 在其中做子串/正则匹配。 */
-    private fun buildCombined(list: SvnChangeList): String {
-        val sb = StringBuilder()
-        fun append(s: String) {
-            if (s.isNotBlank()) {
-                sb.append(' ')
-                sb.append(s)
-            }
+    private fun buildCombined(list: SvnChangeList): String = buildString {
+        append(list.comment)
+        for (path in list.affectedPaths) {
+            append(' ')
+            append(path)
         }
-        if (fields.contains(LogFilterField.BUG_ID)) {
-            append(bugIdPattern.findAll(list.comment).joinToString(" ") { it.value })
+        append(' ')
+        append(list.committerName)
+        append(' ')
+        append(list.number.toString())
+        list.commitDate?.let {
+            append(' ')
+            append(dateText(it))
         }
-        if (fields.contains(LogFilterField.MESSAGE)) append(list.comment)
-        if (fields.contains(LogFilterField.PATH)) list.affectedPaths.forEach { append(it) }
-        if (fields.contains(LogFilterField.AUTHOR)) append(list.committerName)
-        if (fields.contains(LogFilterField.DATE)) list.commitDate?.let { append(dateText(it)) }
-        if (fields.contains(LogFilterField.REVISION)) append(list.number.toString())
-        return sb.toString()
     }
 
-    private enum class TokenType { AND, AND_NOT, OR }
-
-    private data class Token(val type: TokenType, val text: String)
-
-    private fun tokenize(raw: String): List<Token> {
-        val tokens = mutableListOf<Token>()
-        val s = raw.trim()
-        var i = 0
-        while (i < s.length) {
-            while (i < s.length && s[i] == ' ') i++
-            if (i >= s.length) break
-            var type = TokenType.AND
-            if (s[i] == '-') {
-                type = TokenType.AND_NOT
-                i++
-            } else if (s[i] == '+') {
-                type = TokenType.OR
-                i++
-            }
-            if (i < s.length && s[i] == '"') {
-                i++
-                val sb = StringBuilder()
-                while (i < s.length) {
-                    if (s[i] == '"') {
-                        // "" 转义为一个 '"'（TortoiseSVN 同款处理）
-                        if (i + 1 < s.length && s[i + 1] == '"') {
-                            sb.append('"')
-                            i += 2
-                            continue
-                        }
-                        i++
-                        break
-                    }
-                    sb.append(s[i])
-                    i++
-                }
-                if (sb.isNotBlank()) tokens.add(Token(type, sb.toString()))
-            } else {
-                val start = i
-                while (i < s.length && s[i] != ' ') i++
-                val word = s.substring(start, i)
-                if (word.isNotBlank()) tokens.add(Token(type, word))
-            }
-        }
-        return tokens
-    }
-
-    private fun matchCombined(combined: String, tokens: List<Token>): Boolean {
-        if (useRegex) {
-            val opts = if (caseSensitive) emptySet<RegexOption>() else setOf(RegexOption.IGNORE_CASE)
-            return tokens.all { t ->
-                try {
-                    Regex(t.text, opts).containsMatchIn(combined)
-                } catch (e: IllegalArgumentException) {
-                    // 用户写了非法正则：该 token 视为不匹配（而不是让整个过滤崩掉）
-                    false
-                }
-            }
-        }
-        val hay = if (caseSensitive) combined else combined.lowercase()
-        val ands = tokens.filter { it.type == TokenType.AND }
-        val nots = tokens.filter { it.type == TokenType.AND_NOT }
-        val ors = tokens.filter { it.type == TokenType.OR }
-        val needle: (String) -> String = { w -> if (caseSensitive) w else w.lowercase() }
-        for (t in ands) if (!hay.contains(needle(t.text))) return false
-        for (t in nots) if (hay.contains(needle(t.text))) return false
-        if (ors.isNotEmpty() && ors.none { hay.contains(needle(it.text)) }) return false
-        return true
-    }
-
-    // ----------------------------------------------------- 命中高亮
-
-    /** 该字段是否命中（决定是否对该字段着色）。 */
-    fun isFieldMatched(list: SvnChangeList, field: LogFilterField): Boolean {
-        if (!fields.contains(field)) return false
-        val text = fieldText(list, field)
-        return text.isNotEmpty() && highlightRanges(text).isNotEmpty()
-    }
-
-    /** 在给定文本中找出所有命中区间，供渲染器按段着色（合并相邻/重叠区间）。 */
-    fun highlightRanges(text: String): List<IntRange> {
-        // 用缓存的 token（与 [matchesText] 同一份），保证"高亮"与"实际匹配"永远一致
-        if (tokens.isEmpty()) return emptyList()
-        val ranges = mutableListOf<IntRange>()
-        for (t in tokens) {
-            if (t.type == TokenType.AND_NOT) continue
-            if (useRegex) {
-                try {
-                    val opts = if (caseSensitive) emptySet<RegexOption>() else setOf(RegexOption.IGNORE_CASE)
-                    ranges.addAll(Regex(t.text, opts).findAll(text).map { it.range })
-                } catch (e: IllegalArgumentException) {
-                    // 非法正则忽略（该 token 不产生高亮）
-                }
-            } else {
-                ranges.addAll(substringRanges(text, t.text))
-            }
-        }
-        return mergeRanges(ranges)
-    }
-
-    private fun substringRanges(text: String, token: String): List<IntRange> {
-        if (token.isEmpty()) return emptyList()
-        val hay = if (caseSensitive) text else text.lowercase()
-        val needle = if (caseSensitive) token else token.lowercase()
-        val out = mutableListOf<IntRange>()
-        var idx = hay.indexOf(needle)
-        while (idx >= 0) {
-            out.add(idx until idx + needle.length)
-            idx = hay.indexOf(needle, idx + needle.length)
-        }
-        return out
-    }
-
-    private fun mergeRanges(ranges: List<IntRange>): List<IntRange> {
-        if (ranges.size <= 1) return ranges
-        val sorted = ranges.sortedBy { it.first }
-        val merged = mutableListOf<IntRange>()
-        var cur = sorted[0]
-        for (r in sorted.drop(1)) {
-            if (r.first <= cur.last + 1) {
-                cur = cur.first..maxOf(cur.last, r.last)
-            } else {
-                merged.add(cur)
-                cur = r
-            }
-        }
-        merged.add(cur)
-        return merged
-    }
-
-    private fun fieldText(list: SvnChangeList, field: LogFilterField): String = when (field) {
-        LogFilterField.MESSAGE -> list.comment
-        LogFilterField.PATH -> list.affectedPaths.joinToString(" ")
-        LogFilterField.AUTHOR -> list.committerName
-        LogFilterField.REVISION -> list.number.toString()
-        LogFilterField.BUG_ID -> bugIdPattern.findAll(list.comment).joinToString(" ") { it.value }
-        LogFilterField.DATE -> list.commitDate?.let { dateText(it) } ?: ""
-    }
-
-    /** 日期字段的规范显示/匹配文本（与渲染器保持一致，确保高亮命中）。 */
+    /**
+     * 日期字段的规范匹配文本（`yyyy-MM-dd HH:mm`）。
+     *
+     * 用 `java.time.format.DateTimeFormatter` 而**不是** `SimpleDateFormat`：后者非线程安全
+     * （可变 formatter），而本方法会被 EDT（渲染）与后台线程（过滤）同时调用。
+     * `DateTimeFormatter` 不可变、线程安全。
+     */
     fun dateText(date: Date): String = DATE_TIME_FORMATTER.format(date.toInstant())
 
-    companion object {
-        /** 默认 Bug-ID 正则：`[A-Z][A-Z0-9]+-\d+`。 */
-        val DEFAULT_BUG_ID_PATTERN: Regex = Regex("[A-Z][A-Z0-9]+-\\d+")
+    private companion object {
+        /** 分词用的空白分隔（连续空白按一个处理）。 */
+        private val WHITESPACE = Regex("\\s+")
 
-        /**
-         * 日期显示/匹配统一格式（`yyyy-MM-dd HH:mm`）。
-         *
-         * 用 `java.time.format.DateTimeFormatter` 而**不是** `SimpleDateFormat`：后者非线程安全
-         * （可变 formatter），而 [dateText] 会被 EDT（渲染/高亮）与后台线程（分页过滤）同时调用，
-         * 共用一个静态实例会随机抛错甚至串格式。`DateTimeFormatter` 不可变、线程安全。
-         */
         private const val DATE_TIME_PATTERN = "yyyy-MM-dd HH:mm"
 
         private val DATE_TIME_FORMATTER: DateTimeFormatter =

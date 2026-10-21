@@ -8,21 +8,39 @@
 ### 新增
 - 入口链接注入 SVN 的「Subversion Working Copies Information」面板（紧跟「Merge From…」下方），
   项目关闭时自动摘除，不留残留。
-- 修订选择对话框：TortoiseSVN 式过滤（Message / Path / Author / Revision / Bug-ID / Date +
-  正则 / 大小写 / 日期区间 / 版本区间）、分页加载（+100 / +500 / Show All / Refresh）、
-  快速搜索、`Ctrl+D` 查看差异。
+- **修订选择对话框「原版化 + 显式搜索框」（第五轮，2026-10-21）**：
+  - 界面布局、行渲染（平台 `CommittedChangeListRenderer` + 行首复选框 + `ListMergeStatus` 图标）、
+    工具栏（全选 / 全不选 / +100 / +500）、右栏变更树、`[Already merged]` 标记
+    全部对齐原版 `ToBeMergedDialog`；
+  - **唯一新增**：表格上方独立一行的关键词搜索框——匹配全字段（提交说明 + 全部变更路径 +
+    作者 + 版本号 + 日期文本），多关键词空格分隔取且、大小写不敏感；`Esc`/`✕` 清空；
+    同行右侧显示「匹配 M / 已加载 N」；输入 300ms 防抖、后台线程过滤（EDT 只 `setItems`）；
+  - 过滤只作用于**已加载集合**（零服务器请求），命中不足由用户显式「+100 / +500」加载更多；
+    游标跟踪**已加载全集的最早修订号**，过滤态下翻页不跳段（原版取 model 末行，过滤后会跳段）。
 - 每修订的合并状态图标（已合并 / 外来 / 计算中）与右栏 `[Already merged]` 标记，
   复用原版 `MergeChecker` / `ListMergeStatus`，可一键关闭。
 - 合并执行完全复用原版链路：`LocalChangesPromptTask`（本地改动提示）→
   `SvnIntegrateChangesTask`（进度 / 冲突解决 / 更新信息树）。
-- 设置页：`Settings | Version Control | SVN Enhance Merge`（每页条数、合并状态开关、
-  Bug-ID 正则、默认日期范围）。
+- 设置页：`Settings | Version Control | SVN Enhance Merge`（每页条数、合并状态开关）。
 - 界面文案英文 + 简体中文，按 IDE 语言包状态自动切换。
 
 ### 变更
 - 项目/包名重命名：`SubversionEnhance` → `SvnMergeEnhance`，
   `com.svn.revisionselect` → `com.weixf.svn.mergeenhance`，
   插件名 `SVN Custom Merge` → `SVN Enhance Merge`，界面中文「自定义合并」→「增强合并」。
+- **移除 TortoiseSVN 式过滤设施（第五轮，2026-10-21）**——按用户决策「界面保持原版，
+  只增加一个显式搜索框」整体删除：
+  - 删除 `ui/LogFilterPanel.kt`（By 字段勾选 / 搜索框 / From-To 日历 / 正则 / 大小写）、
+    `log/LogFilterField.kt`、命中高亮（`highlightRanges` 等）、自绘 `RevisionCellRenderer`
+    （回归平台 `CommittedChangeListRenderer`）、自定义行高、底部自定义状态栏、
+    表格隐式 `TableViewSpeedSearch`（与显式搜索框双轨且与空格切换勾选存在按键消费竞争）、
+    工具栏「Show All / Refresh」；
+  - 删除**日期区间**全链路（开关 / 日历 / `LogFilter` 日期字段 / 设置项）与
+    **LGoodDatePicker 依赖**（含 JitPack 仓库与 `THIRD-PARTY-LICENSES.txt`，
+    安装包 434KB → 103KB，回到「零外部 Maven 坐标」）；
+  - 删除「Bug-ID 正则」「默认日期范围」设置项与过滤栏的偏好持久化字段
+    （`filterFields`/`useRegex`/`caseSensitive` 等；旧 `svnEnhanceMerge.xml` 由平台忽略未知字段，无需迁移）；
+  - 测试 60 → 39 用例（删日期/正则/高亮/字段/token 语法用例，新增 AND/大小写/全字段用例）。
 - **支持范围上限 2025.2 → 2026.2.3**（`until-build=252.*` → `262.*`）：已通过
   `runPluginVerifier` 对 IC-2022.1 与 IC-2026.2.3 两端的二进制 API 校验（两端均 Compatible，
   2026.2.3 侧自动解析并比对了对应的 Marketplace 版 `Subversion 262.10968.211`）。

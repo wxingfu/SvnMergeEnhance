@@ -1,29 +1,25 @@
 package com.weixf.svn.mergeenhance
 
 import com.weixf.svn.mergeenhance.log.LogFilter
-import com.weixf.svn.mergeenhance.log.LogFilterField
 import io.mockk.every
 import io.mockk.mockk
 import org.jetbrains.idea.svn.history.SvnChangeList
 import java.util.Date
 import kotlin.test.Test
-import kotlin.test.assertContentEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * 过滤条件语义测试（T10.1）。
+ * 过滤条件语义测试（第五轮退化版）。
  *
  * `SvnChangeList` 是 svn4idea 的数据类、构造需要 `SvnVcs`（IDE 组件），
  * 单元测试里用 mockk 只 stub 过滤用到的 getter
  * （comment / committerName / commitDate / number / affectedPaths）。
  *
- * 为什么值得为它引入 mockk：过滤语义（分词、AND/OR/NOT、取反、正则、Bug-ID、日期/版本区间）
- * 是 TortoiseSVN 兼容性的核心，且**已被真实缺陷验证过**——
- * 「含 `-` 的文本被误判为版本区间」这条就是本测试类先红、再驱动 `looksLikeRevisionRange`
- * 加上"两侧必须为数字"约束的；而该函数最终被**整体删除**（见下面的
- * `search text with a dash is never parsed as a revision range`）：
- * 搜索框只做文本匹配（版本区间维度在第四轮已整体删除），才算彻底根治。
+ * 第五轮起语义收敛为：**单一搜索词 + 全字段拼接 + 空格 AND + 大小写不敏感**。
+ * 历史版本（TortoiseSVN 式：`-`NOT / `+`OR / 引号短语 / `!`取反 / 正则 / 大小写开关 /
+ * By 字段勾选 / Bug-ID / 日期区间）的用例已随 `LogFilter` 重写整体删除，
+ * 沿革说明见 `LogFilter` 的 KDoc，勿再恢复。
  * 日期用固定时间戳（1579084800000L）避免时区/当前时间导致偶发失败。
  */
 class LogFilterTest {
@@ -55,28 +51,31 @@ class LogFilterTest {
     @Test
     fun `empty search text does not filter`() {
         val filter = LogFilter(searchText = "")
-        assertFalse(filter.isFiltering())
+        assertFalse(filter.hasSearchText)
         assertTrue(filter.matches(defaultList))
     }
 
     @Test
     fun `blank search text does not filter`() {
         val filter = LogFilter(searchText = "   ")
-        assertFalse(filter.isFiltering())
+        assertFalse(filter.hasSearchText)
         assertTrue(filter.matches(defaultList))
     }
 
-    // -------------------------------------------------- 单条件
+    // -------------------------------------------------- 单条件（全字段）
 
     @Test
     fun `single token matches anywhere in combined text`() {
+        // 提交说明
         assertTrue(LogFilter(searchText = "login").matches(defaultList))
-        // 作者字段也被拼接，故作者名可命中
+        // 作者字段
         assertTrue(LogFilter(searchText = "alice").matches(defaultList))
-        // 路径字段也被拼接
+        // 变更路径字段
         assertTrue(LogFilter(searchText = "Util.java").matches(defaultList))
-        // 版本号字段也被拼接
+        // 修订号字段
         assertTrue(LogFilter(searchText = "42").matches(defaultList))
+        // 日期文本字段（格式 yyyy-MM-dd HH:mm，本地时区）
+        assertTrue(LogFilter(searchText = "2020-01-15").matches(defaultList))
     }
 
     @Test
@@ -85,203 +84,41 @@ class LogFilterTest {
     }
 
     @Test
-    fun `field selection limits the combined text`() {
-        // 只勾选 Message：作者名不再参与匹配
-        val onlyMessage = LogFilter(searchText = "alice", fields = setOf(LogFilterField.MESSAGE))
-        assertFalse(onlyMessage.matches(defaultList))
-
-        // 只勾选 Author：提交说明内容不再参与匹配
-        val onlyAuthor = LogFilter(searchText = "login", fields = setOf(LogFilterField.AUTHOR))
-        assertFalse(onlyAuthor.matches(defaultList))
-        // 但作者名本身可以命中
-        assertTrue(LogFilter(searchText = "alice", fields = setOf(LogFilterField.AUTHOR)).matches(defaultList))
+    fun `plain number is a text match not a range`() {
+        // 版本号只是普通文本：42 在字段里 → 命中；43 不在 → 不命中
+        assertTrue(LogFilter(searchText = "42").matches(defaultList))
+        assertFalse(LogFilter(searchText = "43").matches(defaultList))
+        // 含 '-' 的普通文本同样按文本处理（"2026-10" 不会被解析成任何区间）
+        val list = changeList(number = 20261001, comment = "2026-10 release")
+        assertTrue(LogFilter(searchText = "2026-10").matches(list))
+        assertFalse(LogFilter(searchText = "2026-11").matches(list))
     }
 
-    // -------------------------------------------------- 多词组合
+    // -------------------------------------------------- 多词组合（AND）
 
     @Test
     fun `multiple tokens are ANDed`() {
         assertTrue(LogFilter(searchText = "login ABC-123").matches(defaultList))
+        // 缺任何一个词都不命中
         assertFalse(LogFilter(searchText = "login missingword").matches(defaultList))
+        assertFalse(LogFilter(searchText = "missingword ABC-123").matches(defaultList))
     }
 
     @Test
-    fun `minus prefix excludes`() {
-        val filter = LogFilter(searchText = "login -refactor")
-        assertFalse(filter.matches(defaultList)) // 同时含 refactor → 被排除
-        assertTrue(filter.matches(changeList(1, "fix login only")))
+    fun `extra whitespace between tokens is ignored`() {
+        assertTrue(LogFilter(searchText = "  login   ABC-123  ").matches(defaultList))
     }
 
-    @Test
-    fun `plus prefix forms an OR group`() {
-        val filter = LogFilter(searchText = "refactor +missingword")
-        // AND 部分命中、OR 组无命中 → 不匹配
-        assertFalse(filter.matches(defaultList))
-        // AND 与 OR 组都命中 → 匹配
-        assertTrue(filter.matches(changeList(1, "refactor missingword")))
-    }
+    // -------------------------------------------------- 大小写
 
     @Test
-    fun `quoted phrase matches substring with space`() {
-        assertTrue(LogFilter(searchText = "\"bug ABC\"").matches(defaultList))
-        assertFalse(LogFilter(searchText = "\"bug ABC-124\"").matches(defaultList))
-    }
-
-    @Test
-    fun `leading exclamation negates the whole expression`() {
-        assertTrue(LogFilter(searchText = "!login").matches(changeList(1, "unrelated")))
-        assertFalse(LogFilter(searchText = "!login").matches(defaultList))
-    }
-
-    @Test
-    fun `case sensitivity is off by default and on when requested`() {
+    fun `matching is case insensitive`() {
         assertTrue(LogFilter(searchText = "LOGIN").matches(defaultList))
-        assertFalse(LogFilter(searchText = "LOGIN", caseSensitive = true).matches(defaultList))
-        assertTrue(LogFilter(searchText = "login", caseSensitive = true).matches(defaultList))
-    }
-
-    @Test
-    fun `regex mode treats each token as a pattern`() {
-        assertTrue(LogFilter(searchText = "ABC-\\d+", useRegex = true).matches(defaultList))
-        assertFalse(LogFilter(searchText = "XYZ-\\d+", useRegex = true).matches(defaultList))
-        // 非法正则不应抛异常，只是不命中
-        assertFalse(LogFilter(searchText = "[unclosed", useRegex = true).matches(defaultList))
-    }
-
-    // -------------------------------------------------- Bug-ID 字段
-
-    @Test
-    fun `bug id field extracts ids with the default pattern`() {
-        val filter = LogFilter(searchText = "ABC-123", fields = setOf(LogFilterField.BUG_ID))
-        assertTrue(filter.matches(defaultList))
-        assertFalse(filter.matches(changeList(1, "no id here")))
-    }
-
-    @Test
-    fun `bug id field honours a custom pattern`() {
-        // 小写 jira-77：默认正则要求大写开头，提取不到；自定义正则 [a-z]+-\d+ 可以
-        val list = changeList(1, "addresses jira-77")
-        val filter = LogFilter(
-            searchText = "jira-77",
-            fields = setOf(LogFilterField.BUG_ID),
-            bugIdPattern = Regex("[a-z]+-\\d+"),
-        )
-        assertTrue(filter.matches(list))
-        assertFalse(LogFilter(searchText = "jira-77", fields = setOf(LogFilterField.BUG_ID)).matches(list))
-    }
-
-    @Test
-    fun `search text with a dash is never parsed as a revision range`() {
-        // "2026-10" 的本意是搜 2026 年 10 月。旧实现按"两侧是数字"把它当成版本区间 [10, 2026]，
-        // 而版本区间会改写服务端游标 → 用户得到一个**空列表且没有任何报错**。
-        // 现在搜索框只做文本匹配（对齐 TortoiseSVN：其搜索框里修订号也只是普通文本）。
-        val list = changeList(number = 20261001, comment = "2026-10 release")
-        assertTrue(LogFilter(searchText = "2026-10").matches(list))
-        // 反证：只是文本不命中，不会因为"长得像区间"而被放行
-        assertFalse(LogFilter(searchText = "2026-11").matches(list))
-        // 含 '-' 的普通文本（Bug-ID 形态）同样按文本处理
-        assertTrue(LogFilter(searchText = "ABC-123").matches(defaultList))
-        assertFalse(LogFilter(searchText = "ABC-124").matches(defaultList))
-        // 区间写法 "10-20" 现在也只是普通文本：combined 里没有这个子串 → 不命中
-        assertFalse(LogFilter(searchText = "10-20").matches(defaultList))
-    }
-
-
-    // -------------------------------------------------- 日期区间
-
-    @Test
-    fun `date range includes boundaries`() {
-        val filter = LogFilter(
-            dateRangeEnabled = true,
-            fromDate = DATE_2020_01_15,
-            toDate = Date(DATE_2020_01_15.time + 60_000),
-        )
-        assertTrue(filter.hasDateRange())
-        assertTrue(filter.matches(defaultList))
-
-        // 早于 from → 排除
-        assertFalse(filter.matches(changeList(1, "old", date = Date(DATE_2020_01_15.time - 60_000))))
-        // 晚于 to → 排除
-        assertFalse(filter.matches(changeList(1, "new", date = Date(DATE_2020_01_15.time + 120_000))))
-    }
-
-    @Test
-    fun `date range is ignored when disabled`() {
-        val filter = LogFilter(
-            dateRangeEnabled = false,
-            fromDate = Date(DATE_2020_01_15.time + 60_000),
-        )
-        assertFalse(filter.hasDateRange())
-        assertTrue(filter.matches(defaultList))
-    }
-
-    @Test
-    fun `list without commit date is rejected when date range active`() {
-        val noDate: SvnChangeList = mockk()
-        every { noDate.commitDate } returns null
-        every { noDate.comment } returns "x"
-        assertFalse(LogFilter(dateRangeEnabled = true, fromDate = DATE_2020_01_15).matches(noDate))
-    }
-
-    // -------------------------------------------------- 版本区间
-
-
-
-    @Test
-    fun `plain number is a text match not a range`() {
-        // 无分隔符 → 按普通文本匹配（ Combined 文本里含 "42"）
-        assertTrue(LogFilter(searchText = "42").matches(defaultList))
-        // 而 43 不在任何字段里
-        assertFalse(LogFilter(searchText = "43").matches(defaultList))
-    }
-
-    @Test
-    fun `matchesText ignores the date range while matches does not`() {
-        // 搜索命中判定只看文本：日期区间是**客户端**的显示子集，与"是否匹配搜索词"无关。
-        val narrow = LogFilter(
-            searchText = "login",
-            dateRangeEnabled = true,
-            fromDate = Date(DATE_2020_01_15.time + 86_400_000L),
-            toDate = Date(DATE_2020_01_15.time + 172_800_000L),
-        )
-        // 完整匹配：日期不在区间内 → 不命中
-        assertFalse(narrow.matches(defaultList))
-        // 纯文本匹配：仍然命中（搜索"有没有这个词"与日期无关）
-        assertTrue(narrow.matchesText(defaultList))
-    }
-
-    @Test
-    fun `matchesText honours the negate prefix`() {
-        // 整段 `!` 取反只作用于文本维度
-        val list = changeList(number = 7, comment = "login bug")
-        // `!` 是**整段取反**：含 login → 取反后为 false；不含 missing → 取反后为 true
-        assertFalse(LogFilter(searchText = "!login").matchesText(list))
-        assertTrue(LogFilter(searchText = "!missing").matchesText(list))
-    }
-
-    @Test
-    fun `highlight and matching agree on a negated search`() {
-        // 旧实现里高亮按原始 searchText（含 `!`）分词、匹配按去掉 `!` 的正文分词 → 两者对不上。
-        // 现在统一用同一份 token：高亮应落在 "login" 上，而不是 "!login"。
-        val filter = LogFilter(searchText = "!login")
-        val ranges = filter.highlightRanges("login bug")
-        assertContentEquals(listOf(0 until 5), ranges)
-    }
-
-    // -------------------------------------------------- 高亮
-
-    @Test
-    fun `highlight ranges cover token occurrences`() {
-        val filter = LogFilter(searchText = "login")
-        val ranges = filter.highlightRanges("fix login bug")
-        assertContentEquals(listOf(4 until 9), ranges)
-    }
-
-    @Test
-    fun `isFieldMatched is false for unselected fields`() {
-        val filter = LogFilter(searchText = "login", fields = setOf(LogFilterField.MESSAGE))
-        assertTrue(filter.isFieldMatched(defaultList, LogFilterField.MESSAGE))
-        assertFalse(filter.isFieldMatched(defaultList, LogFilterField.AUTHOR))
+        assertTrue(LogFilter(searchText = "Login").matches(defaultList))
+        assertTrue(LogFilter(searchText = "login").matches(defaultList))
+        // 大小写不敏感同样作用于作者与路径字段
+        assertTrue(LogFilter(searchText = "ALICE").matches(defaultList))
+        assertTrue(LogFilter(searchText = "main.JAVA").matches(defaultList))
     }
 
     // -------------------------------------------------- 辅助

@@ -286,19 +286,84 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 
 ## 实现状态与文档
 
-**v2 已全部实现并通过官方校验**（2026-10-18）。2026-10-19 在 v2 之上修复 R1~R4（R1+R2+R3 修订选择搜索精准度与深历史可达性；R4 日期区间模式下搜索出现无关内容、`+N` 按钮消失、改区间值不重拉），重跑 `test`/`buildPlugin`/`verifyOnIde`/`runPluginVerifier` 全通过。v1 的 `BranchSelectionDialog`、`MergeMethodSelectionDialog`、
-`RevisionLogDataSource`、`RevisionItem`、`SvnRevisionMergeExecutor`、`WcInfoPanelLinkInjector` 均已删除。
+**v2 已全部实现并通过官方校验**（2026-10-18）。此后历经 R1~R4 修复（2026-10-19）、
+第三/四轮过滤解耦（2026-10-20），并于 **2026-10-21 实施第五轮「原版化 + 显式搜索框」**
+（详见下方第五节；TortoiseSVN 式过滤设施已整体移除）。v1 的 `BranchSelectionDialog`、
+`MergeMethodSelectionDialog`、`RevisionLogDataSource`、`RevisionItem`、
+`SvnRevisionMergeExecutor`、`WcInfoPanelLinkInjector` 均已删除；第四轮的 `ui/RevRangeDialog`、
+第五轮的 `ui/LogFilterPanel` / `log/LogFilterField` 亦已删除。
 
 实际类清单：
 
 - `wcinfo/WcInfoLinkInjector`（入口 `StartupActivity.DumbAware`，内含 private `LinkInstaller`）、`EnhanceMergeAction`（普通类）、`EnhanceMergeBundle`
-- `flow/MergeFlow`、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`、`ui/LogFilterPanel`（`ui/RevRangeDialog` 已于第四轮删除）
+- `flow/MergeFlow`、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`、`ui/RevisionSearchField`
 - `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`
 - `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
 
-单测：`LogFilterTest`(24) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3)
-+ `BundleKeysTest`(4) + `EnhanceMergeSettingsTest`(8) = **60**（第四轮后；此前为 63）。
-（旧文档里的 12 / 53 / 55 均已落后，以 63 为准。）
+单测：`LogFilterTest`(8) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3)
++ `BundleKeysTest`(3) + `EnhanceMergeSettingsTest`(4) = **39**（第五轮后；此前为 60）。
+（旧文档里的 12 / 53 / 55 / 63 均已落后，以 39 为准。）
+
+### 2026-10-21 原版化 + 显式搜索框（第五轮 · **已实施**）
+
+> **状态**：**已实施**（2026-10-21）。本节**取代**前四轮中与「过滤栏 / 日期区间 / 高亮 /
+> Show All / Refresh / 状态栏 / 隐式 speed search」相关的全部设计。方案文档：
+> `.codebuddy/plan/RevisionSelect-AlignOriginal-AddSearch-plan.md`；需求/任务/验收：
+> `.codebuddy/specs/add-revision-search-filter/{spec,tasks,checklist}.md`。
+> 保存分支：`save/pre-v3-original-align`（= 第四轮完成态 `31c3d35`，已推送）。
+
+#### 用户痛点与决策（勿再反复讨论）
+
+原版 `ToBeMergedDialog` 在版本多、时间跨度大时只能滚动列表逐个寻找，无关键词过滤。
+用户决策：**界面保持原版，只在表格上方增加一个显式搜索框**（输入即过滤下方 Log）。
+搜索框位置：表格正上方独立一行，宽度适度（300）不拉满。
+
+#### 实施内容
+
+| 文件 | 改动 |
+|---|---|
+| `ui/RevisionSelectDialog.kt` | 行渲染回归平台 `CommittedChangeListRenderer` + `JCheckBox`(WEST) + `ListMergeStatus` 图标 provider（删自绘 `RevisionCellRenderer` / 高亮 / 自定义行高）；工具栏删 Show All / Refresh（剩原版四动作）；删隐式 `TableViewSpeedSearch` 及其 LinkageError 降级；删自定义状态栏（`createSouthAdditionalPanel` / `refreshStatusLabel` / `schedulePathCountRecalc` / `pathCountAlarm`）；删 `loadAll` / `reloadAll` / `loadLimitReached` 提示；`onFilterChanged` 改单一 `LogFilter(searchText)`；`onDataLoaded` 删日期分支；+N 加载中两按钮均隐藏（原版语义） |
+| `ui/RevisionSearchField.kt`（新） | 表格上方独立一行搜索框：`JBTextField` + ✕ + Esc（**必须 consume**，否则模态对话框直接关窗）+ 300ms 防抖（`Alarm` 绑 disposable）+ 同行右侧计数标签；`SEARCH_FIELD_WIDTH = 300` 不拉满 |
+| `log/LogFilter.kt` | 重写为退化版：`searchText` 单参；全字段拼接（说明 + 路径 + 作者 + 版本号 + 日期）；空格 AND；大小写不敏感子串；`by lazy` token 缓存保留 |
+| `log/LogFilterField.kt` | ✅ 整文件删除 |
+| `ui/LogFilterPanel.kt` | ✅ 整文件删除（By / 搜索框✕ / 日期 / 正则 / 大小写） |
+| `settings/*` | 删 `defaultDateRangeDays` / `dateRangeEnabled` / `filterFields` / `useRegex` / `caseSensitive` / `bugIdPattern` 及 `defaultFromDate()` / `dateRangeEnabledOnOpen()` / `bugIdRegex`；Configurable 只剩两项 |
+| `build.gradle.kts` | 删 LGoodDatePicker 依赖 + JitPack 仓库 + `THIRD-PARTY-LICENSES.txt` 追加 |
+| `messages/*.properties` | 删 `filter.*` / `settings.default.date.range*` / `status.no.match|loading|search.partial|load.limit` / `action.show.all*` / `action.reload*` / `progress.loading.all*`；新增 `search.placeholder` / `search.clear` / `status.search.count` |
+| 单测 | `LogFilterTest` 重写为 8 例（空词 / 全字段 / AND / 大小写）；`EnhanceMergeSettingsTest` 4 例（pageSize 夹取 / 旧配置兼容 / 开关往返）；`BundleKeysTest` 3 例（中英一致 / 非空 / 搜索框 key）；`LogPageLoaderTest` 的「loader 忽略搜索词」用例改单参构造 |
+
+#### 行为变化（用户可感知）
+
+| | 第四轮之后 | 第五轮之后 |
+|---|---|---|
+| 界面 | 顶部 TSVN 过滤栏 + 自绘行 + 底部状态栏 | 原版布局 + 平台行渲染；唯一新增 = 表格上方搜索框 |
+| 搜索 | 过滤栏（多字段 / 正则 / 日期 / 高亮）+ 表格隐式 speed search 双轨 | 单一显式搜索框（全字段 / 空格 AND / 大小写不敏感 / 无高亮） |
+| 日期区间 | 开关 + From/To 日历 | **已删除** |
+| 工具栏 | 全选 / 全不选 / Show All / Refresh / +100 / +500 | 全选 / 全不选 / +100 / +500（原版） |
+| +N 语义 | 加载中置灰 | 加载中两按钮隐藏（原版语义） |
+| 第三方依赖 | LGoodDatePicker（JitPack） | **零外部依赖**（zip 434KB → 103KB） |
+
+#### 关键技术点（勿再改错）
+
+- **过滤 × 分页协同**：`+N` 游标 = 已加载全集最早修订号（`LogPageLoader` 游标）；
+  **禁止**用 model 可见末行（原版 `getLastNumber()` 在过滤下会整段跳过修订）；
+- **空格键**：删 speed search 后 `installSpaceKeyToggle` 是唯一空格消费者
+  （`SpeedSearchBase.processKeyEvent` 对空白字符 `showPopup + consume`，已字节码核实，双轨必冲突）；
+- **复选框命中区**：`Rectangle(cell.x, cell.y, JCheckBox().preferredSize.width, cell.height)`，
+  复选框必须贴 `BorderLayout.WEST`（T8 结论仍有效）；
+- **状态图标 provider**：`CommittedChangeListRenderer(Project, List<CommittedChangeListDecorator>)`
+  ——2022.1 的构造器第二参是 `CommittedChangeListDecorator`（SAM：`Icon decorate(CommittedChangeList)`）
+  列表而非函数列表，Kotlin 需写 `CommittedChangeListDecorator { list -> … }`。
+
+#### 验证结果（2026-10-21）
+
+- `gradlew clean test buildPlugin` → **39 用例 0 失败**（60 → 39）；zip **103KB**；字节码 **major 55**；
+- `gradlew verifyOnIde "-PideaVersion=2022.1" "-PverifyTimeout=900" "-PverifyAutoClose=true"` →
+  **PASS（0 ERROR，`EnhanceMerge i18n` 就绪行正常）**（600s 曾超时一次：沙箱就绪随机器负载波动，
+  见「verifyOnIde 超时陷阱」）；
+- `gradlew runPluginVerifier -PverifierLocalIde=…ideaIC-2022.1,…ideaIC-2026.2.3` → 两端 **Compatible**
+  （262 侧仅 `ActionToolbar.updateActionsImmediately` 一处 deprecated，不阻断）；
+- 待人工沙箱走查：`.codebuddy/specs/add-revision-search-filter/checklist.md` B/C/D 节。
 
 ### 2026-10-20 搜索只搜「已加载」+ 删除版本区间（第四轮 · **已实施**）
 
