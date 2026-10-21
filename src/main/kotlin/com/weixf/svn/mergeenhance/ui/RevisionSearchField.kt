@@ -175,7 +175,7 @@ class RevisionSearchField(
         const val DEBOUNCE_MS = 300
 
         /** 搜索框宽度（经 JBUI 缩放）：适度即可，不拉满整行。 */
-        const val SEARCH_FIELD_WIDTH = 300
+        const val SEARCH_FIELD_WIDTH = 450
 
         /** 搜索框最小行高（经 JBUI 缩放）：preferredSize 取样失败时的兜底。 */
         const val MIN_SEARCH_HEIGHT = 24

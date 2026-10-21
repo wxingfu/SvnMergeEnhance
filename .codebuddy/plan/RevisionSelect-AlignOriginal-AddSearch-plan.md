@@ -49,7 +49,7 @@ Merge from <branch>
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**唯一新增**：表格上方独立一行的搜索框（不拉满宽度，左对齐，约 300px 量级）。
+**唯一新增**：表格上方独立一行的搜索框（不拉满宽度，左对齐，约 450px 量级）。
 **其余一切**：布局、行渲染、工具栏四动作、+100/+500 语义、Splitter 0.7、右栏变更树、
 `[Already merged]` 标记、合并状态图标、底部按钮——**与原版 `ToBeMergedDialog` 一致**。
 
@@ -96,7 +96,7 @@ Merge from <branch>
 - **位置**：左侧列表栏内、**工具栏（Select All / +100 / +500）上方**独立一行
   （用户决策 2026-10-21：搜索框先入眼、操作按钮紧跟其下）。
   即表格所在栏的顶部，属于"列表的搜索框"，**不**横跨右栏、不放整个对话框顶部（那会重回"过滤栏"观感）。
-- **宽度**：适度，不拉满。`preferredSize = JBUI.size(SEARCH_FIELD_WIDTH, …)`，`SEARCH_FIELD_WIDTH ≈ 300`，
+- **宽度**：适度，不拉满。`preferredSize = JBUI.size(SEARCH_FIELD_WIDTH, …)`，`SEARCH_FIELD_WIDTH ≈ 450`，
   左对齐；同行右侧可放一个轻量计数标签（见 5.6）。
 - **构成**：`JBTextField`（无边框内嵌 1px 主题边框，样式沿用现有 `searchBox` 做法：`UIUtil.getTextFieldBackground()` +
   `JBUI.Borders.customLine(JBColor.border(), 1)`）+ 右侧内嵌 ✕ 清除按钮（`AllIcons.Actions.Close`，
