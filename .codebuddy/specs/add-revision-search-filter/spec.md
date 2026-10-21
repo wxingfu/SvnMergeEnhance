@@ -29,7 +29,7 @@
 
 ## R3 显式搜索框（唯一新增）
 
-- **R3.1** 位置：左栏表格**正上方独立一行**（工具栏之下、滚动面板之上），不横跨右栏。
+- **R3.1** 位置：左栏**工具栏（Select All / +100 / +500）上方**独立一行（搜索框先入眼、操作按钮紧跟其下），不横跨右栏。
 - **R3.2** 宽度：适度（`SEARCH_FIELD_WIDTH ≈ 300`，JBUI 缩放），左对齐；同一行内、紧随搜索框之后放轻量计数标签（R6，实现为 `BorderLayout.CENTER` 左缘，视觉上紧贴搜索框而非行尾）。
 - **R3.3** 构成：`JBTextField`（1px 主题边框 + `UIUtil.getTextFieldBackground()`）+ 右侧内嵌 ✕ 按钮
   （`AllIcons.Actions.Close`，仅在有内容时可见；`accessibleContext.accessibleName` 必填）。

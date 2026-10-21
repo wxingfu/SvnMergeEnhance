@@ -323,7 +323,7 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 | 文件 | 改动 |
 |---|---|
 | `ui/RevisionSelectDialog.kt` | 行渲染回归平台 `CommittedChangeListRenderer` + `JCheckBox`(WEST) + `ListMergeStatus` 图标 provider（删自绘 `RevisionCellRenderer` / 高亮 / 自定义行高）；工具栏删 Show All / Refresh（剩原版四动作）；删隐式 `TableViewSpeedSearch` 及其 LinkageError 降级；删自定义状态栏（`createSouthAdditionalPanel` / `refreshStatusLabel` / `schedulePathCountRecalc` / `pathCountAlarm`）；删 `loadAll` / `reloadAll` / `loadLimitReached` 提示；`onFilterChanged` 改单一 `LogFilter(searchText)`；`onDataLoaded` 删日期分支；+N 加载中两按钮均隐藏（原版语义） |
-| `ui/RevisionSearchField.kt`（新） | 表格上方独立一行搜索框：`JBTextField` + ✕ + Esc（**必须 consume**，否则模态对话框直接关窗）+ 300ms 防抖（`Alarm` 绑 disposable）+ 同行右侧计数标签；`SEARCH_FIELD_WIDTH = 300` 不拉满 |
+| `ui/RevisionSearchField.kt`（新） | **工具栏上方**独立一行搜索框（用户决策 2026-10-21：搜索框先入眼、操作按钮紧跟其下）：`JBTextField` + ✕ + Esc（**必须 consume**，否则模态对话框直接关窗）+ 300ms 防抖（`Alarm` 绑 disposable）+ 同行计数标签；`SEARCH_FIELD_WIDTH = 300` 不拉满 |
 | `log/LogFilter.kt` | 重写为退化版：`searchText` 单参；全字段拼接（说明 + 路径 + 作者 + 版本号 + 日期）；空格 AND；大小写不敏感子串；`by lazy` token 缓存保留 |
 | `log/LogFilterField.kt` | ✅ 整文件删除 |
 | `ui/LogFilterPanel.kt` | ✅ 整文件删除（By / 搜索框✕ / 日期 / 正则 / 大小写） |

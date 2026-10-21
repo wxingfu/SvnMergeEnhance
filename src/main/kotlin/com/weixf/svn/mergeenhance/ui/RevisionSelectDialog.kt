@@ -301,10 +301,11 @@ class RevisionSelectDialog(
         // 否则平台会告警 "toolbar by default uses any focused component to update its actions"
         val tableComponent = createRevisionTable()
         toolbar = createToolbar().apply { targetComponent = revisionsList }
-        // 顶部两行：工具栏（原版四动作）+ 表格正上方的显式搜索框（第五轮唯一新增）
+        // 顶部两行：显式搜索框（第五轮唯一新增）+ 工具栏（原版四动作）。
+        // 搜索框在上、工具栏在下——输入框先入眼，操作按钮紧跟其下（用户决策 2026-10-21）。
         val topPanel = JPanel(BorderLayout()).apply {
-            add(toolbar.component, BorderLayout.NORTH)
-            add(searchField, BorderLayout.SOUTH)
+            add(searchField, BorderLayout.NORTH)
+            add(toolbar.component, BorderLayout.SOUTH)
         }
         listPanel.add(topPanel, BorderLayout.NORTH)
         listPanel.add(tableComponent, BorderLayout.CENTER)

@@ -59,8 +59,8 @@
       - `fun clearText()` / `fun currentText(): String` 供外部调用
       - 右侧计数标签 `JBLabel`（初始不可见），`fun updateCount(matched: Int, loaded: Int)`
 - [ ] T4.2 `RevisionSelectDialog.createCenterPanel()`：`listPanel` 结构改为
-      `add(toolbar, NORTH)` → `add(searchField, NORTH)` → `add(tableScroll, CENTER)`
-      （顺序：工具栏、搜索行、表格；用中间容器或嵌套 BorderLayout 保证三者纵向排列）
+      顶部容器内 `add(searchField, NORTH)` → `add(toolbar, SOUTH)` → 外层 `add(topPanel, NORTH)` → `add(tableScroll, CENTER)`
+      （顺序：搜索行、工具栏、表格；用户决策 2026-10-21：搜索框在工具栏上方）
 - [ ] T4.3 `searchField` 防抖回调 → `onFilterChanged()`（过滤词变化路径）
 - [ ] T4.4 文案：`search.placeholder` / `search.clear` / `status.search.count`（中英双包）
 - [ ] T4.5 `gradlew test` 绿（搜索框为纯 UI，无单测；编译通过即验收）

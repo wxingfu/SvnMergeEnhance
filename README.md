@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![JetBrains Marketplace](https://img.shields.io/badge/Marketplace-SVN%20Enhance%20Merge-orange)](https://plugins.jetbrains.com/)
 
-一个 **独立的 IntelliJ IDEA 增强插件**：在 IDEA 内置 Subversion 插件之上，提供**与原版「Merge From → Quick Manual Select」界面一致**的逐版本勾选合并——并在表格上方增加**关键词搜索过滤框**，解决版本过多、时间跨度大时只能逐个滚动查找的问题；合并执行走**与原版「Merge From」完全一致**的链路。
+一个 **独立的 IntelliJ IDEA 增强插件**：在 IDEA 内置 Subversion 插件之上，提供**与原版「Merge From → Quick Manual Select」界面一致**的逐版本勾选合并——并在工具栏上方增加**关键词搜索过滤框**，解决版本过多、时间跨度大时只能逐个滚动查找的问题；合并执行走**与原版「Merge From」完全一致**的链路。
 
 > 本插件 **不 fork、不修改** IDEA 内置 Subversion 插件（svn4idea）源码，仅依赖其公开 API，可随 IDEA 正常构建与升级。
 
@@ -50,11 +50,11 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 ### 修订选择界面（核心增强）
 
-界面布局、行渲染、工具栏（全选 / 全不选 / +100 / +500）、右栏变更树均与原版 `ToBeMergedDialog` 一致；**唯一新增**是表格上方独立一行的关键词搜索框。
+界面布局、行渲染、工具栏（全选 / 全不选 / +100 / +500）、右栏变更树均与原版 `ToBeMergedDialog` 一致；**唯一新增**是工具栏上方独立一行的关键词搜索框。
 
 | 能力 | 说明 |
 |---|---|
-| 关键词搜索过滤 | 表格上方显式搜索框；匹配范围 = **全字段**（提交说明 + 全部变更路径 + 作者 + 版本号 + 日期文本）；多关键词**空格分隔取且**，子串匹配、**大小写不敏感**；`Esc` / `✕` 清空恢复。同行右侧显示「匹配 M / 已加载 N」 |
+| 关键词搜索过滤 | 工具栏上方显式搜索框；匹配范围 = **全字段**（提交说明 + 全部变更路径 + 作者 + 版本号 + 日期文本）；多关键词**空格分隔取且**，子串匹配、**大小写不敏感**；`Esc` / `✕` 清空恢复。同行显示「匹配 M / 已加载 N」 |
 | 过滤范围 | **只过滤已加载的修订**（纯客户端，零服务器请求）；命中不足时点「+100 / +500」加载更多，新加载数据同样按当前关键词过滤 |
 | 分页加载 | 首屏 + 「+100 / +500」实时向仓库翻页（游标分页，跟踪已加载全集的最早修订号，过滤后不跳段） |
 | 合并状态 | 每行显示 已合并 ✔ / 外来修订（无图标）/ 计算中 图标；右栏对**已合并**文件追加 `[Already merged]` |
@@ -127,7 +127,7 @@ Working Copies Information 面板 → Enhance Merge… 链接
 
 5. **④ 选择修订**：
    - 勾选需要合并的版本（鼠标点行首复选框，或选中行后按 `Space`）；
-   - 表格上方的**搜索框**输入关键词缩小范围：多关键词空格分隔取且，匹配提交说明 / 路径 / 作者 / 版本号 / 日期（大小写不敏感）；搜索只过滤**已加载**的修订，命中不足时点「+100 / +500」继续加载（不会自动请求服务器），新加载数据同样按当前关键词过滤；
+   - 工具栏上方的**搜索框**输入关键词缩小范围：多关键词空格分隔取且，匹配提交说明 / 路径 / 作者 / 版本号 / 日期（大小写不敏感）；搜索只过滤**已加载**的修订，命中不足时点「+100 / +500」继续加载（不会自动请求服务器），新加载数据同样按当前关键词过滤；
    - 「+100 / +500」继续向后翻页；
    - 选中行后 `Ctrl+D` 查看该修订差异。
 
@@ -204,7 +204,7 @@ SubversionEnhance/
 │   ├── settings/EnhanceMergeSettings.kt  # 设置状态（applicationService，持久化 svnEnhanceMerge.xml）
 │   ├── settings/EnhanceMergeConfigurable.kt # 设置页 UI（Version Control 分组）
 │   ├── ui/RevisionSelectDialog.kt       # 修订选择对话框（原版布局 / CommittedChangeListRenderer / 分页 / 合并状态）
-│   ├── ui/RevisionSearchField.kt        # 表格上方显式搜索框（防抖 / ✕ / Esc / 计数标签）
+│   ├── ui/RevisionSearchField.kt        # 工具栏上方显式搜索框（防抖 / ✕ / Esc / 计数标签）
 │   ├── ui/MergeVariantDialog.kt         # 合并方式确认（Revision Select / Cancel）
 │   └── wcinfo/WcInfoLinkInjector.kt     # 向 Working Copies Information 面板注入 Enhance Merge 链接
 ├── src/main/resources/
@@ -359,7 +359,7 @@ deprecation 会把构建卡死）。
    调用处已做 null 防护。
 2. **IDEA 平台 API**：`com.intellij.*` 在 since/until 范围内由平台兼容性承诺覆盖。
    第五轮起不再使用 `com.intellij.ui.TableViewSpeedSearch`（隐式 speed search 已移除，
-   搜索改由表格上方显式搜索框承担）；行渲染直接用 `CommittedChangeListRenderer`（2022.1 起签名稳定）。
+   搜索改由工具栏上方显式搜索框承担）；行渲染直接用 `CommittedChangeListRenderer`（2022.1 起签名稳定）。
 3. **Kotlin 标准库**：按官方要求不随插件分发（`kotlin.stdlib.default.dependency=false`），
    运行时由 IDEA 核心 `lib/3rd-party-rt.jar` 提供。已实测 2022.1 沙箱加载正常
    （`gradlew verifyOnIde -PideaVersion=2022.1` → PASS）。
