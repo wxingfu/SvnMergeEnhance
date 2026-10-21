@@ -29,8 +29,8 @@ import java.awt.Component
  * WC 面板链接 / EnhanceMergeAction
  *   └─ ① SelectBranchPopup（图2，复用原版弹窗）
  *        └─ ② MergeVariantDialog（图3，仅 Revision Select + Cancel）
- *             └─ ③ RevisionSelectDialog（图4，过滤栏 + 实时分页）      ← T4–T6
- *                  └─ ④ MergeExecutor（复用 SvnIntegrateChangesTask）  ← T7
+ *             └─ ③ RevisionSelectDialog（图4，原版布局 + 关键词搜索过滤 + 实时分页）  ← T4–T6
+ *                  └─ ④ MergeExecutor（复用 SvnIntegrateChangesTask）                  ← T7
  * ```
  *
  * 设计要点：

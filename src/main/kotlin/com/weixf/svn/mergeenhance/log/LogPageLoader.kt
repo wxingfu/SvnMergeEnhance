@@ -1,5 +1,6 @@
 package com.weixf.svn.mergeenhance.log
 
+import org.jetbrains.annotations.VisibleForTesting
 import org.jetbrains.idea.svn.history.SvnChangeList
 import org.jetbrains.idea.svn.integrate.MergeCalculatorTask
 import org.jetbrains.idea.svn.integrate.MergeContext
@@ -77,9 +78,12 @@ class LogPageLoader(
     /**
      * 重置加载状态：游标回到 HEAD、世代号递增（作废在飞任务）。
      *
-     * 只在**重新开始加载**时调用（`Refresh`：清空已加载集合并从 HEAD 重查第一页）。
-     * 搜索词/日期区间变化**不**调用它们——那两个维度是纯客户端过滤，不需要重新查询。
+     * 语义上只在**重新开始加载**时调用（历史上的 `Refresh`：清空已加载集合并从 HEAD
+     * 重查第一页）。⚠️ **Refresh 按钮已随第五轮删除，当前生产代码无调用方**，
+     * 仅测试与未来的"清空重拉"入口使用——保留它是为了游标/世代号语义有测试看守，
+     * 勿因"没人调"就删掉测试覆盖面。
      */
+    @VisibleForTesting
     fun reset() {
         generation++
         cursor = -1L
@@ -123,12 +127,14 @@ class LogPageLoader(
     }
 
     /**
-     * 「全部显示」被显式触发时调用：即使此前已判定到底，也允许再发一次请求确认。
+     * 允许对「已判定到底」的游标再发一次确认请求（即使此前 `allLoaded`）。
      *
-     * 为什么需要：`allLoaded` 的判定带启发式（见 [loadByCursorRaw] 里"整页时保守视为可能还有"），
-     * 极端情况下会误报"已到底"让按钮置灰；用户显式点「全部显示」时应当无条件再探测一次，
-     * 而不是让按钮变成死的。
+     * 为什么需要：`allLoaded` 的判定带启发式（见 [loadByCursorRaw] 里"整页时保守视为
+     * 可能还有"），极端情况下会误报"已到底"；历史上的「全部显示」按钮会显式调用它
+     * 再探测一次，避免按钮变成死的。⚠️ **Show All 已随第五轮删除，生产代码无调用方**，
+     * 仅测试使用；将来若重增同类"强制加载全部"入口应恢复调用。
      */
+    @VisibleForTesting
     fun reopenIfExhausted() {
         if (allLoaded) allLoaded = false
     }

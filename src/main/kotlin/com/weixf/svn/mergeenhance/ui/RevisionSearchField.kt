@@ -83,11 +83,20 @@ class RevisionSearchField(
     /** 输入防抖（绑对话框 disposable，关闭即作废）。 */
     private val debounce = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
 
+    /**
+     * 程序化赋值抑制标志：`clearSearch()` 清空文本时会再次触发 DocumentListener，
+     * 置位期间不排防抖请求——否则每次清空都多一轮「空词全量过滤 + filterToken 自增」。
+     */
+    private var suppressEvents = false
+
     init {
         border = JBUI.Borders.empty(2, 0, 2, 0)
 
-        // 子组件装完后按内容高度固定宽度（BorderLayout.WEST 不拉伸，天然保持适度宽度）
-        searchBox.preferredSize = JBUI.size(SEARCH_FIELD_WIDTH, searchBox.preferredSize.height)
+        // 子组件装完后按内容高度固定宽度（BorderLayout.WEST 不拉伸，天然保持适度宽度）。
+        // 高度兜底：未 realize 的组件算不出 preferredSize 时（个别 LAF 返回 0）用最小行高，
+        // 防止搜索框塌成零高。
+        val boxHeight = searchBox.preferredSize.height.coerceAtLeast(JBUI.scale(MIN_SEARCH_HEIGHT))
+        searchBox.preferredSize = JBUI.size(SEARCH_FIELD_WIDTH, boxHeight)
 
         add(searchBox, BorderLayout.WEST)
         add(countLabel, BorderLayout.CENTER)
@@ -112,6 +121,7 @@ class RevisionSearchField(
     }
 
     private fun onInputChanged() {
+        if (suppressEvents) return
         syncClearVisibility()
         // 防抖：先取消未触发的请求再排一个新的（Alarm 没有 Swing Timer 的 restart()）
         debounce.cancelAllRequests()
@@ -130,7 +140,13 @@ class RevisionSearchField(
      */
     fun clearSearch() {
         debounce.cancelAllRequests()
-        textField.text = ""
+        // 程序化清空：抑制 DocumentListener，免得 300ms 后又排一轮空词全量过滤
+        suppressEvents = true
+        try {
+            textField.text = ""
+        } finally {
+            suppressEvents = false
+        }
         syncClearVisibility()
         onSearch("")
         textField.requestFocusInWindow()
@@ -160,6 +176,9 @@ class RevisionSearchField(
 
         /** 搜索框宽度（经 JBUI 缩放）：适度即可，不拉满整行。 */
         const val SEARCH_FIELD_WIDTH = 300
+
+        /** 搜索框最小行高（经 JBUI 缩放）：preferredSize 取样失败时的兜底。 */
+        const val MIN_SEARCH_HEIGHT = 24
 
         /** ✕ 按钮尺寸（经 JBUI 缩放）。 */
         const val CLEAR_BUTTON_SIZE = 20

@@ -192,14 +192,6 @@ class RevisionSelectDialog(
     private var currentFilter: LogFilter = LogFilter()
 
     /**
-     * 上一次**后台过滤**得到的命中条数（过滤在后台线程做，EDT 读不到即时结果）。
-     *
-     * 用途：搜索框同行右侧的计数标签「匹配 M / 已加载 N」——M 即此值。
-     */
-    @Volatile
-    private var lastMatchCount: Int = 0
-
-    /**
      * 当前加载任务的进度指示器：启动新任务前用它**取消**旧任务。
      *
      * ## 为什么必须有
@@ -445,7 +437,14 @@ class RevisionSelectDialog(
             }
 
             override fun onFinished() {
-                loadIndicator.compareAndSet(myIndicator, null)
+                // ⚠️ 只有「自己仍是当前在飞任务」时才复位 loadingMore。
+                // 被新任务取消的旧任务也会走到这里，且它的 token 校验必然通过
+                // （reloadToken 无人递增、恒 0）——若无条件复位，就会把**新任务**的
+                // "加载中"状态提前清掉：+N 按钮重新可见可点 → 用户再点 → 新任务被
+                // cancel → 若取消发生在 loadNextPageRaw 的多批补数中途，就是
+                // 「游标已推进、该批数据被丢弃」的跳段缺陷（规则文档反复警告的那类）。
+                // CAS 失败（loadIndicator 已是 null 或别人的）说明自己已被顶替，直接让位。
+                if (!loadIndicator.compareAndSet(myIndicator, null)) return
                 // 对话框已关闭时不再触碰工具栏（ActionToolbar 也随窗口销毁）。
                 if (token != reloadToken || isDisposed || context.project.isDisposed) return
                 loadingMore = false
@@ -520,8 +519,7 @@ class RevisionSelectDialog(
                     // reloadToken 属于加载令牌，与过滤结果的有效性无关。
                     if (token != filterToken || isDisposed || context.project.isDisposed) return@invokeLater
                     model.setItems(filtered.toMutableList())
-                    lastMatchCount = filtered.size
-                    // 搜索框同行右侧的计数标签：匹配 M / 已加载 N
+                    // 搜索框同行的计数标签：匹配 M / 已加载 N
                     searchField.updateCount(filtered.size, snapshot.size)
                     updateStatus()
                 },
