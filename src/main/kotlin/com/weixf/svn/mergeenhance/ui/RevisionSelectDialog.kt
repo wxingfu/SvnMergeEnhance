@@ -217,10 +217,16 @@ class RevisionSelectDialog(
     }
 
     /**
-     * 重查令牌：只接受最后一次重查结果，防止旧结果覆盖新结果。
+     * 加载令牌：只接受最后一次加载任务的结果，防止旧结果覆盖新结果。
      *
-     * 为什么需要：加载是异步的（后台线程）。用户连续改条件时可能有多个后台任务在飞，
-     * 先发的后回会把列表写成过期内容。每个任务在 `onSuccess/onThrowable/onFinished` 里都比对
+     * ⚠️ **当前无人递增它**（「重新整理」随 Refresh 按钮一并删除，首屏数据由
+     * `MergeFlow` 构造参数带入），恒 0、守卫恒放行——`+N` 互斥实际靠
+     * [loadIndicator] 的 `cancel()` 完成。保留是为了将来重增"清空重拉"入口时恢复语义。
+     * **切勿**把它与 [filterToken] 混用：曾因过滤回调误与它比对，导致输入首个
+     * 搜索词后所有过滤结果被丢弃（列表毫无变化），见 [applyFilterToModel] 注释。
+     *
+     * 为什么需要：加载是异步的（后台线程），`+N` 连续点击可能有多个任务在飞，
+     * 先发的后回会把列表写成过期内容。任务在 `onSuccess/onThrowable/onFinished` 里比对
      * 自己的令牌，不一致就直接丢弃。
      *
      * ⚠️ 令牌**只挡回调写回**，挡不住 loader 内部状态被旧任务污染——那由
@@ -235,7 +241,7 @@ class RevisionSelectDialog(
      *
      * [reloadToken] 只在「重新整理」（清空全集 + 重置游标 + 重拉）时递增——
      * 那时在途的加载任务确实该作废（数据来源已失效）。
-     * 而**改搜索词/日期**只是重过滤：正在加载的那批数据依然是有效的原始日志，
+     * 而**改搜索词**只是重过滤：正在加载的那批数据依然是有效的原始日志，
      * 若此时递增 [reloadToken]，加载任务回来时会被判为过期而丢弃——
      * **数据没进已加载集合，游标却已推进**，后续翻页会整段跳过这批修订。
      *
@@ -509,7 +515,10 @@ class RevisionSelectDialog(
             }
             ApplicationManager.getApplication().invokeLater(
                 {
-                    if (token != reloadToken || isDisposed || context.project.isDisposed) return@invokeLater
+                    // ⚠️ 必须与 **filterToken** 比对（曾误写成 reloadToken，导致输入首个搜索词后
+                    // 所有过滤结果都被判"过期"丢弃——列表毫无变化，2026-10-21 用户实测发现）。
+                    // reloadToken 属于加载令牌，与过滤结果的有效性无关。
+                    if (token != filterToken || isDisposed || context.project.isDisposed) return@invokeLater
                     model.setItems(filtered.toMutableList())
                     lastMatchCount = filtered.size
                     // 搜索框同行右侧的计数标签：匹配 M / 已加载 N
@@ -545,48 +554,6 @@ class RevisionSelectDialog(
         applyFilterToModel()
         updateStatus()
     }
-
-    /**
-     * 首屏加载：只取一页。命中不足由用户显式「+100 / +500」补齐（**不自动**向后扫描）。
-     */
-    private fun runFirstPage(token: Int) {
-        val generation = loader.snapshot()
-        ProgressManager.getInstance().run(object : Task.Backgroundable(
-            context.project,
-            EnhanceMergeBundle.message("progress.loading.revisions"),
-            true,
-        ) {
-            private val collected = ArrayList<SvnChangeList>()
-            private var myIndicator: ProgressIndicator? = null
-
-            override fun run(indicator: ProgressIndicator) {
-                indicator.isIndeterminate = true
-                myIndicator = indicator
-                loadIndicator.set(indicator)
-                collected.addAll(loader.loadNextPageRaw(settings.pageSize, generation))
-            }
-
-            override fun onSuccess() {
-                if (token != reloadToken || isDisposed || context.project.isDisposed) return
-                onDataLoaded(collected)
-            }
-
-            override fun onThrowable(error: Throwable) {
-                if (token != reloadToken || isDisposed || context.project.isDisposed) return
-                // 被新任务取消：静默丢弃，不弹错误框
-                if (error is ProcessCanceledException) return
-                showLoadError(error)
-            }
-
-            override fun onFinished() {
-                loadIndicator.compareAndSet(myIndicator, null)
-                if (token != reloadToken || isDisposed || context.project.isDisposed) return
-                loadingMore = false
-                refreshToolbar()
-            }
-        })
-    }
-
 
     /**
      * 点击行首复选框区域切换勾选（与 `ToBeMergedDialog` 同一手法：按列宽判定命中）。
