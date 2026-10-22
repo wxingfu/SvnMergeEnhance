@@ -58,4 +58,20 @@ class BundleKeysTest {
             assertNotNull(zhCn.getProperty(key), "中文包缺少 key: $key")
         }
     }
+
+    @Test
+    fun `tab keys exist and are non blank in both bundles`() {
+        // 常驻 Enhance Merge 标签页（第六轮唯一新增）的 key 必须有文案
+        for (key in listOf(
+            "tab.name.enhance.merge",
+            "tab.select.root",
+            "tab.select.branch",
+            "tab.change.branch",
+            "tab.refresh.roots",
+            "tab.empty.hint",
+        )) {
+            assertNotNull(base.getProperty(key), "英文基包缺少 key: $key")
+            assertNotNull(zhCn.getProperty(key), "中文包缺少 key: $key")
+        }
+    }
 }

@@ -62,6 +62,24 @@ object MergeFlow {
      * （入口链接本就只出现在 SVN 工作副本面板里，这是双保险）。
      */
     fun start(project: Project, wcInfo: WCInfo, anchor: Component?) {
+        selectBranch(project, wcInfo, anchor) { context ->
+            // 链接入口保留「合并方式选择」这一步（常驻标签页入口不经过它）
+            when (MergeVariantDialog(project).showDialog()) {
+                MergeVariantDialog.Variant.REVISION_SELECT -> openRevisionSelect(context)
+                MergeVariantDialog.Variant.CANCEL -> Unit
+            }
+        }
+    }
+
+    /**
+     * 可复用的「分支选择」入口：根校验 → 分支弹窗（[SelectBranchPopup]）→ URL 换算 → 守卫 →
+     * 回调 [onContext]（得到换算好的 [MergeContext]）。
+     *
+     * 第六轮抽出，供链接入口与常驻标签页入口共用：
+     * - 链接入口（[start]）在回调里走 `MergeVariantDialog → openRevisionSelect`；
+     * - 标签页入口（`EnhanceMergePanel`）在回调里直接加载首屏并建 `RevisionSelectPanel`（不经 [MergeVariantDialog]）。
+     */
+    fun selectBranch(project: Project, wcInfo: WCInfo, anchor: Component?, onContext: (MergeContext) -> Unit) {
         val vcs = SvnVcs.getInstance(project) ?: return
         val root = wcInfo.rootInfo.virtualFile
 
@@ -74,7 +92,7 @@ object MergeFlow {
             return
         }
 
-        val callback = BranchSelectedHandler(project, vcs, wcInfo, root)
+        val callback = BranchSelectedHandler(project, vcs, wcInfo, root, onContext)
         SelectBranchPopup.showForBranchRoot(
             project,
             root,
@@ -147,6 +165,7 @@ object MergeFlow {
         private val vcs: SvnVcs,
         private val wcInfo: WCInfo,
         private val root: VirtualFile,
+        private val onContext: (MergeContext) -> Unit,
     ) : SelectBranchPopup.BranchSelectedCallback {
 
         override fun branchSelected(
@@ -185,11 +204,7 @@ object MergeFlow {
             }
 
             val context = MergeContext(vcs, sourceUrl, wcInfo, url.tail, root)
-
-            when (MergeVariantDialog(project).showDialog()) {
-                MergeVariantDialog.Variant.REVISION_SELECT -> openRevisionSelect(context)
-                MergeVariantDialog.Variant.CANCEL -> Unit
-            }
+            onContext(context)
         }
 
         /** 与原版 `QuickMerge.areInSameHierarchy` 同义：两个 URL 互为祖先时不允许合并。 */
