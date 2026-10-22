@@ -109,8 +109,12 @@ object MergeFlow {
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                // 首屏：加载器刚创建、世代号即 0，游标从 HEAD 开始
-                items = loader.loadNextPageRaw(EnhanceMergeSettings.getInstance().pageSize, loader.snapshot())
+                // 首屏：加载器刚创建、世代号即 0，游标从 HEAD 开始；透传 indicator → 进度条「取消」可真正中止
+                items = loader.loadNextPageRaw(
+                    EnhanceMergeSettings.getInstance().pageSize,
+                    loader.snapshot(),
+                    indicator,
+                )
             }
 
             override fun onSuccess() {

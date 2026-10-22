@@ -72,6 +72,7 @@ class BundleKeysTest {
             "wc.label.format",
             "wc.label.depth",
             "wc.label.working.copy.root",
+            "status.load.limit.reached",
         )) {
             assertNotNull(base.getProperty(key), "英文基包缺少 key: $key")
             assertNotNull(zhCn.getProperty(key), "中文包缺少 key: $key")

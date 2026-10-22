@@ -1,5 +1,6 @@
 package com.weixf.svn.mergeenhance.log
 
+import com.intellij.openapi.progress.ProgressIndicator
 import org.jetbrains.annotations.VisibleForTesting
 import org.jetbrains.idea.svn.history.SvnChangeList
 import org.jetbrains.idea.svn.integrate.MergeCalculatorTask
@@ -95,15 +96,22 @@ class LogPageLoader(
      *
      * @param expectedGeneration 调用时刻的世代号（[snapshot]）；与当前不一致说明期间发生了 [reset]，
      *   本次调用直接返回空，调用方应据此放弃本轮工作。
+     * @param indicator 可选的进度指示器：**每批之间**检查一次取消点，
+     *   使进度条上的「取消」能真正中止分页（否则按了取消也停不下来——分页循环本身不感知 indicator）。
      */
-    fun loadNextPageRaw(pageSize: Int, expectedGeneration: Long): List<SvnChangeList> {
+    fun loadNextPageRaw(
+        pageSize: Int,
+        expectedGeneration: Long,
+        indicator: ProgressIndicator? = null,
+    ): List<SvnChangeList> {
         if (expectedGeneration != generation) return emptyList()
-        return loadByCursorRaw(pageSize, expectedGeneration)
+        return loadByCursorRaw(pageSize, expectedGeneration, indicator)
     }
 
     private fun loadByCursorRaw(
         pageSize: Int,
         expectedGeneration: Long,
+        indicator: ProgressIndicator?,
     ): List<SvnChangeList> {
         if (allLoaded) return emptyList()
         val raw = ArrayList<SvnChangeList>()
@@ -111,6 +119,8 @@ class LogPageLoader(
         while (raw.size < pageSize && !allLoaded && batches < MAX_BATCHES) {
             // 每轮检查一次世代号：reset 发生后立即停止，避免把旧数据继续塞进来
             if (expectedGeneration != generation) return raw
+            // 取消点：抛 ProcessCanceledException → 平台的 Task 走 onCancel/onThrowable，不再写回数据
+            indicator?.checkCanceled()
             batches++
             val result = cursorSource?.invoke(cursor, pageSize)
                 ?: MergeCalculatorTask.loadChangeLists(context, cursor, pageSize).let { it.first to it.second }

@@ -2,6 +2,8 @@ package com.weixf.svn.mergeenhance
 
 import com.weixf.svn.mergeenhance.log.LogFilter
 import com.weixf.svn.mergeenhance.log.LogPageLoader
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
 import io.mockk.every
 import io.mockk.mockk
 import org.jetbrains.idea.svn.history.SvnChangeList
@@ -9,6 +11,7 @@ import org.jetbrains.idea.svn.integrate.MergeContext
 import java.util.Date
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -223,5 +226,35 @@ class LogPageLoaderTest {
         assertEquals(1, calls)
         // 加载器返回的是**原始**条目：过滤是调用方（对话框在内存里）的职责，加载器完全不参与
         assertEquals(0, raw.count { withSearch.matches(it) })
+    }
+
+    // -------------------------------------------------- 取消
+
+    /**
+     * 进度条上的「取消」必须能真正中止分页。
+     *
+     * 以前分页循环完全不感知 indicator：按了取消也停不下来，数据照样回来并写进表格
+     * （用户以为取消了，其实又多等了一轮扫描）。
+     */
+    @Test
+    fun `loadNextPageRaw stops when the indicator is cancelled`() {
+        var calls = 0
+        var checks = 0
+        // 模拟用户按下进度条上的「取消」：第 2 次取消点检查时抛 ProcessCanceledException
+        val indicator = mockk<ProgressIndicator>()
+        every { indicator.checkCanceled() } answers {
+            if (++checks > 1) throw ProcessCanceledException()
+        }
+        val loader = LogPageLoader(context, cursorSource = { _, _ ->
+            calls++
+            // 每页只给 3 条（不足 pageSize）→ 分页循环会继续下一批，才有机会撞上第 2 个取消点
+            page(30, 29, 28) to false
+        })
+
+        assertFailsWith<ProcessCanceledException> {
+            loader.loadNextPageRaw(10, loader.snapshot(), indicator)
+        }
+        // 只跑了第一批就被取消（不会继续扫仓库）
+        assertEquals(1, calls)
     }
 }

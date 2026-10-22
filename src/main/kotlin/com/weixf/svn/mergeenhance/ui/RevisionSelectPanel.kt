@@ -30,6 +30,7 @@ import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.table.TableView
+import com.intellij.util.Alarm
 import com.intellij.util.ui.ColumnInfo
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.ListTableModel
@@ -40,7 +41,7 @@ import com.weixf.svn.mergeenhance.log.LogPageLoader
 import com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings
 import org.jetbrains.idea.svn.history.SvnChangeList
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicReference
 import org.jetbrains.idea.svn.integrate.MergeContext
 import org.jetbrains.idea.svn.integrate.QuantitySelection
@@ -145,21 +146,42 @@ class RevisionSelectPanel(
     /** [mergeChecker.prepare] 的互斥锁：保证 [mergeCheckerPrepared] 的"检查 + prepare"是原子的。 */
     private val mergeCheckerLock = Any()
 
-    /** 当前选中修订中「已合并」的文件，用于右侧文件列表的 [Already merged] 标记（对齐原版）。 */
-    private val alreadyMerged = HashSet<Change>()
+    /**
+     * 当前选中修订中「已合并」的文件，用于右侧文件列表的 [Already merged] 标记（对齐原版）。
+     *
+     * `@Volatile` + 不可变集合：右栏刷新在**后台线程**算好后整体替换（原子换引用），
+     * EDT 侧渲染器只读引用——避免"后台往 HashSet 里塞、EDT 同时遍历"的并发问题。
+     */
+    @Volatile
+    private var alreadyMerged: Set<Change> = emptySet()
 
     private val model: ListTableModel<SvnChangeList> =
         ListTableModel<SvnChangeList>(FAKE_COLUMN).apply { setItems(initialItems) }
 
-    /** 已下载的**原始**修订全集（未过滤），跨「加载更多 / 改过滤条件 / 搜索」保留。 */
-    private val loadedAll: MutableList<SvnChangeList> = CopyOnWriteArrayList(initialItems)
+    /**
+     * 已下载的**原始**修订全集（未过滤），跨「加载更多 / 改过滤条件 / 搜索」保留。
+     *
+     * 不可变列表 + `@Volatile` 原子替换（而不是 `CopyOnWriteArrayList` 逐条 `add`）：
+     * 后者每次 `add` 都会复制整个底层数组，`+500` 就是 500 次全量拷贝（O(n²)），
+     * 且在 EDT 上发生 → 表现为"点 +500 后界面冻结数秒"。
+     *
+     * 语义上它也是**勾选集合的权威数据源**（见 [selectedChangeLists]）：勾选以修订号为准，
+     * 不能被"当前过滤视图"裁剪。
+     */
+    @Volatile
+    private var loadedAll: List<SvnChangeList> = initialItems
 
     /** `lateinit` 的 UI 组件：在 [buildComponent] 里创建。 */
     private lateinit var revisionsList: TableView<SvnChangeList>
     private lateinit var changesBrowser: CommittedChangesBrowser
     private lateinit var toolbar: ActionToolbar
 
-    /** 「加载更多」进行中（防止重复触发；同时驱动工具栏动作的可用态）。 */
+    /**
+     * 「加载更多」进行中（防止重复触发；同时驱动工具栏动作的可用态）。
+     *
+     * `@Volatile`：EDT 写（`loadMore` / `onFinished`），动作 `update()` 可能在任意线程读。
+     */
+    @Volatile
     private var loadingMore = false
 
     /** 表格上方的显式搜索框（第五轮唯一新增组件）。须在 `init` 之前声明。 */
@@ -178,15 +200,48 @@ class RevisionSelectPanel(
     }
 
     /**
-     * 加载令牌：只接受最后一次加载任务的结果。
-     * ⚠️ 当前无人递增（Refresh 已删），恒 0、守卫恒放行——`+N` 互斥实际靠 [loadIndicator] 取消完成。
+     * 过滤令牌：只用于丢弃过期的过滤结果（EDT 自增、后台线程比对 → 必须 `@Volatile`，
+     * 否则后台线程可能读到旧值，把过期结果写进表格）。
      */
-    private var reloadToken = 0
+    @Volatile
+    private var filterToken = 0
 
     /**
-     * 过滤令牌：只用于丢弃过期的过滤结果。与 [reloadToken] 分开（改搜索词只重过滤，不牵连在途加载）。
+     * 右栏（变更文件树 + `[Already merged]` 标记）的**防抖 + 后台**刷新。
+     *
+     * 为什么必须后台：右栏刷新要做两件重活——
+     * ① 对每个选中修订跑 `mergeChecker.getNotMergedPaths`（要抢后台合并状态任务的锁）；
+     * ② `CommittedChangesTreeBrowser.collectChanges`（为每条路径构造 `Change` 并跨修订合并）。
+     * 二者原本都在 EDT 上同步执行，选中集一大（大选集 / 全选后 +N）必然冻结界面。
+     *
+     * `POOLED_THREAD` 让重活跑在后台线程；结果算好后回 EDT 只做"换引用 + 重绘"。
      */
-    private var filterToken = 0
+    private val rightPaneAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
+
+    /**
+     * 在飞的后台任务：过滤（[filterTask]）与合并状态计算（[mergeStatusTask]）各自独立，
+     * 面板释放时中断，避免面板销毁后继续跑。
+     */
+    private val filterTask = AtomicReference<Future<*>?>(null)
+    private val mergeStatusTask = AtomicReference<Future<*>?>(null)
+
+    /**
+     * 启动一个后台任务并登记到 [ref]（同一时刻只保留最新一个；启动新任务会中断旧的）。
+     *
+     * 中断旧任务的意义：连续敲搜索词时，前几轮全量过滤没必要跑完（它们的 结果也会被
+     * `filterToken` 丢弃，纯属浪费 CPU）。
+     */
+    private fun launchTask(ref: AtomicReference<Future<*>?>, block: () -> Unit) {
+        ref.getAndSet(null)?.cancel(true)
+        val future = ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                block()
+            } catch (e: ProcessCanceledException) {
+                // 任务被取消（面板释放 / 被新任务取代）：静默丢弃
+            }
+        }
+        ref.set(future)
+    }
 
     /** 动态「+N」动作。**必须在 `init` 之前声明**。 */
     private val loadHundredAction = createLoadMoreAction("action.load.hundred", LOAD_MORE_SMALL)
@@ -200,8 +255,15 @@ class RevisionSelectPanel(
         null,
     ) {
         override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = !loadingMore && !loader.allLoaded
+            val atLimit = loadedAll.size >= MAX_LOADED_ALL
+            e.presentation.isEnabled = !loadingMore && !loader.allLoaded && !atLimit
             e.presentation.isVisible = !loadingMore && !loader.allLoaded
+            // 到达总量上限时说明原因：否则按钮只是"点了没反应"（静默截断）
+            e.presentation.description = if (atLimit) {
+                EnhanceMergeBundle.message("status.load.limit.reached", MAX_LOADED_ALL.toString())
+            } else {
+                EnhanceMergeBundle.message(textKey)
+            }
         }
 
         override fun actionPerformed(e: AnActionEvent) = loadMore(quantity)
@@ -223,9 +285,15 @@ class RevisionSelectPanel(
     }
 
     override fun dispose() {
-        // 子资源（搜索框 Alarm、快捷键注册）已注册到 `this`，由 Disposer 树随本面板一并释放
         if (disposed) return
         disposed = true
+        // 中断在飞的任务：分页加载、过滤 / 合并状态计算、右栏防抖刷新
+        cancelLoadTask()
+        filterTask.getAndSet(null)?.cancel(true)
+        mergeStatusTask.getAndSet(null)?.cancel(true)
+        rightPaneAlarm.cancelAllRequests()
+        // 释放已算出的合并状态缓存（面板是长驻组件，缓存无主时及时回收）
+        mergeStatusMap.clear()
     }
 
     // ------------------------------------------------------------------ UI
@@ -297,8 +365,7 @@ class RevisionSelectPanel(
                 AllIcons.Actions.Selectall,
             ) {
                 override fun actionPerformed(e: AnActionEvent) {
-                    wiseSelection.setAll()
-                    refreshList()
+                    selectAll()
                 }
             },
             object : DumbAwareAction(
@@ -324,7 +391,6 @@ class RevisionSelectPanel(
         cancelLoadTask()
         loadingMore = true
         refreshToolbar()
-        val token = reloadToken
         val generation = loader.snapshot()
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(
@@ -339,24 +405,27 @@ class RevisionSelectPanel(
                 indicator.isIndeterminate = true
                 myIndicator = indicator
                 loadIndicator.set(indicator)
-                added.addAll(loader.loadNextPageRaw(quantity, generation))
+                // 把 indicator 透传给 loader：每批之间检查一次取消点，
+                // 否则进度条上的「取消」按了也停不下来（分页循环本身不感知 indicator）
+                added.addAll(loader.loadNextPageRaw(quantity, generation, indicator))
             }
 
             override fun onSuccess() {
-                if (token != reloadToken || isDisposed || context.project.isDisposed) return
+                if (isDisposed || context.project.isDisposed) return
                 onDataLoaded(added)
             }
 
             override fun onThrowable(error: Throwable) {
-                if (token != reloadToken || isDisposed || context.project.isDisposed) return
+                if (isDisposed || context.project.isDisposed) return
                 if (error is ProcessCanceledException) return
                 showLoadError(error)
             }
 
             override fun onFinished() {
-                if (!loadIndicator.compareAndSet(myIndicator, null)) return
-                if (token != reloadToken || isDisposed || context.project.isDisposed) return
+                loadIndicator.compareAndSet(myIndicator, null)
+                // ⚠️ `loadingMore` 必须无条件复位：早退分支会让「+N」按钮永久消失（无法再加载）
                 loadingMore = false
+                if (isDisposed || context.project.isDisposed) return
                 refreshToolbar()
             }
         })
@@ -365,8 +434,20 @@ class RevisionSelectPanel(
     /** 一批新数据到手后的统一处理：并入全集 → 重过滤 → 重绘。 */
     private fun onDataLoaded(added: List<SvnChangeList>) {
         if (added.isNotEmpty()) {
-            val existing = loadedAll.mapTo(HashSet()) { it.number }
-            added.forEach { if (it.number !in existing) loadedAll.add(it) }
+            // 去重：同批内可能出现重复修订号，必须在循环内回填 existing，否则同一修订会进全集两次
+            val existing = HashSet<Long>(loadedAll.size * 2)
+            loadedAll.forEach { existing.add(it.number) }
+            val fresh = ArrayList<SvnChangeList>(added.size)
+            for (item in added) {
+                if (existing.add(item.number)) fresh.add(item)
+            }
+            if (fresh.isNotEmpty()) {
+                // 一次性构造新列表并原子替换：避免 CopyOnWriteArrayList 逐条 add 的 O(n²) 拷贝
+                val merged = ArrayList<SvnChangeList>(loadedAll.size + fresh.size)
+                merged.addAll(loadedAll)
+                merged.addAll(fresh)
+                loadedAll = merged
+            }
         }
         applyFilterToModel()
         refreshMergeStatus(added)
@@ -392,8 +473,8 @@ class RevisionSelectPanel(
     private fun applyFilterToModel() {
         val filter = currentFilter
         val token = filterToken
-        val snapshot = loadedAll.toList()
-        ApplicationManager.getApplication().executeOnPooledThread {
+        val snapshot = loadedAll          // 不可变快照（@Volatile 原子读，无需再拷贝）
+        launchTask(filterTask) {
             val filtered = if (filter.hasSearchText) {
                 snapshot.filter { filter.matches(it) }
             } else {
@@ -469,29 +550,78 @@ class RevisionSelectPanel(
 
     // ------------------------------------------------------- selection state
 
-    /** 已勾选的修订（稀疏语义）。 */
-    fun selectedChangeLists(): List<SvnChangeList> {
-        val selected = wiseSelection.selected
-        val unselected = wiseSelection.unselected
-        return if (wiseSelection.areAllSelected()) {
-            model.items.filter { !unselected.contains(it.number) }
-        } else {
-            model.items.filter { selected.contains(it.number) }
-        }
+    /**
+     * 「全选」。
+     *
+     * - **无过滤条件**：选中已加载全集（[QuantitySelection] 的「全选起点」语义，
+     *   之后可逐个排除 → 稀疏勾选）；
+     * - **有过滤条件**：只选中**当前可见**的行（与用户视野一致）。
+     *   否则「全选」会把被过滤掉的成千上万条也纳入合并集合（用户以为只合并看到的几条，
+     *   实际合并上万条）——这是数据正确性问题，不只是体验问题。
+     */
+    private fun selectAll() {
+        RevisionSelection.selectAll(
+            visibleNumbers = model.items.map { it.number },
+            hasFilter = currentFilter.hasSearchText,
+            selection = wiseSelection,
+        )
+        refreshList()
     }
 
-    /** 选中行变化 → 刷新右栏变更文件列表。 */
+    /**
+     * 已勾选的修订（稀疏语义）。
+     *
+     * ⚠️ 数据源是**已加载全集**（[loadedAll]），不是 `model.items`（当前过滤后的视图）：
+     * 过滤只是视图，若拿视图求交，用户在过滤前勾选的修订会被**静默剔除**，
+     * 勾选框还显示「已勾」但实际不在合并集合里（合并工具的数据正确性问题）。
+     * 语义实现见 [RevisionSelection]（有单测看守）。
+     */
+    fun selectedChangeLists(): List<SvnChangeList> =
+        RevisionSelection.resolve(loadedAll, { it.number }, wiseSelection)
+
+    /**
+     * 选中行变化 → 刷新右栏变更文件列表。
+     *
+     * 轻量部分（OK 按钮可用态、工具栏）在 EDT 立即做；重活（右栏内容 + `[Already merged]` 标记）
+     * 走 [rightPaneAlarm] 防抖 + 后台线程计算，避免大选中集时冻结界面。
+     */
     private fun onListSelectionChanged() {
         if (!::changesBrowser.isInitialized) return
-        val chosen = revisionsList.selectedObjects
-        alreadyMerged.clear()
-        if (settings.computeMergeStatus) {
-            for (list in chosen) {
-                alreadyMerged.addAll(getAlreadyMergedPaths(list))
-            }
-        }
-        changesBrowser.setChangesToDisplay(if (chosen.isEmpty()) emptyList() else collectChanges(chosen))
         updateStatus()
+        val chosen = revisionsList.selectedObjects   // EDT 读，快
+        rightPaneAlarm.cancelAllRequests()
+        rightPaneAlarm.addRequest({ refreshRightPane(chosen) }, RIGHT_PANE_DEBOUNCE_MS)
+    }
+
+    /**
+     * 右栏刷新（**后台线程**）：算「已合并路径」+ 收集变更文件，算好后回 EDT 应用。
+     *
+     * 这两件事原本都在 EDT 上同步做：① 每个选中修订跑一次 `getNotMergedPaths`（还要抢
+     * 合并状态后台任务的锁）；② `collectChanges` 为每条路径构造 `Change` 并跨修订合并。
+     * 选中集一大（大选集 / 全选后 +N）就是必然的界面冻结。
+     */
+    private fun refreshRightPane(chosen: List<SvnChangeList>) {
+        if (isDisposed || context.project.isDisposed) return
+        val mergedPaths: Set<Change> = if (settings.computeMergeStatus) {
+            val acc = HashSet<Change>()
+            for (list in chosen) {
+                acc.addAll(getAlreadyMergedPaths(list))
+            }
+            acc
+        } else {
+            emptySet()
+        }
+        val changes = if (chosen.isEmpty()) emptyList() else collectChanges(chosen)
+        ApplicationManager.getApplication().invokeLater(
+            {
+                if (isDisposed || context.project.isDisposed) return@invokeLater
+                alreadyMerged = mergedPaths
+                changesBrowser.setChangesToDisplay(changes)
+                revisionsList.repaint()      // 让 `[Already merged]` 标记刷新
+            },
+            ModalityState.any(),
+            context.project.disposed,
+        )
     }
 
     /** 收集变更列表（对齐原版 `collectChanges(changeLists, false)`）。 */
@@ -517,9 +647,22 @@ class RevisionSelectPanel(
 
     /** 刷新派生状态：合并按钮可用性（经 [onSelectionChanged] 回传宿主）+ 工具栏动作可用性。 */
     private fun updateStatus() {
-        onSelectionChanged(selectedChangeLists().isNotEmpty())
+        onSelectionChanged(hasSelection())
         refreshToolbar()
     }
+
+    /**
+     * 是否有勾选（**不解析整个合并集合**）。
+     *
+     * [updateStatus] 在每次选中变化 / 每次过滤结果回填时都会调，若在这里解析全集
+     * （最多 2 万条）就是每次点击都做一遍 O(N) 扫描——这里用集合规模直接判断。
+     */
+    private fun hasSelection(): Boolean =
+        if (wiseSelection.areAllSelected()) {
+            loadedAll.isNotEmpty() && wiseSelection.unselected.size < loadedAll.size
+        } else {
+            wiseSelection.selected.isNotEmpty()
+        }
 
     // ------------------------------------------------------------- renderer
 
@@ -534,10 +677,16 @@ class RevisionSelectPanel(
         private val changeListRenderer = CommittedChangeListRenderer(
             context.project,
             listOf(CommittedChangeListDecorator { list ->
-                if (settings.computeMergeStatus) {
-                    mergeStatusMap[list.number]?.icon ?: ListMergeStatus.REFRESHING.icon
-                } else {
+                if (!settings.computeMergeStatus) {
                     null
+                } else {
+                    val status = mergeStatusMap[list.number]
+                    when {
+                        // 尚未算出状态 → 显示「刷新中」
+                        status == null -> ListMergeStatus.REFRESHING.icon
+                        // 已算出但无状态（如计算失败 → COMMON）→ 不显示图标
+                        else -> status.icon
+                    }
                 }
             }),
         )
@@ -580,38 +729,39 @@ class RevisionSelectPanel(
     private fun refreshMergeStatus(lists: List<SvnChangeList>) {
         if (lists.isEmpty()) return
         if (isDisposed || context.project.isDisposed) return
-        ApplicationManager.getApplication().executeOnPooledThread {
-            var preparedHere = false
-            synchronized(mergeCheckerLock) {
-                if (!mergeCheckerPrepared) {
+        launchTask(mergeStatusTask) {
+            val prepared = synchronized(mergeCheckerLock) {
+                if (mergeCheckerPrepared) {
+                    true
+                } else {
                     try {
                         mergeChecker.prepare()
                         mergeCheckerPrepared = true
-                        preparedHere = true
+                        true
                     } catch (e: Exception) {
                         LOG.warn("Failed to prepare merge checker", e)
-                        return@executeOnPooledThread
+                        false
                     }
                 }
             }
-            if (preparedHere) {
-                ApplicationManager.getApplication().invokeLater(
-                    {
-                        if (!isDisposed && !context.project.isDisposed) onListSelectionChanged()
-                    },
-                    ModalityState.any(),
-                    context.project.disposed,
-                )
-            }
+            if (!prepared) return@launchTask
+            ApplicationManager.getApplication().invokeLater(
+                {
+                    if (!isDisposed && !context.project.isDisposed) onListSelectionChanged()
+                },
+                ModalityState.any(),
+                context.project.disposed,
+            )
             var cnt = REPAINT_BATCH_SIZE
             for (list in lists) {
                 val status = try {
                     synchronized(mergeCheckerLock) { toListMergeStatus(mergeChecker.checkList(list)) }
                 } catch (e: Exception) {
                     LOG.warn("Failed to check merge status for r${list.number}", e)
-                    null
+                    // 失败也要落一个明确状态：否则渲染器永远回落成「刷新中」图标（看起来像还在算）
+                    ListMergeStatus.COMMON
                 }
-                if (status != null) mergeStatusMap[list.number] = status
+                mergeStatusMap[list.number] = status
                 if (--cnt <= 0) {
                     cnt = REPAINT_BATCH_SIZE
                     repaintTable()
@@ -653,6 +803,13 @@ class RevisionSelectPanel(
 
         /** 每算完多少行就重绘一次。 */
         const val REPAINT_BATCH_SIZE = 10
+
+        /**
+         * 右栏（变更文件树 + `[Already merged]` 标记）刷新的防抖间隔（毫秒）。
+         *
+         * 连续勾选 / 取消时只算最后一次：旧版在 EDT 上同步算，勾选集一大就冻结界面。
+         */
+        const val RIGHT_PANE_DEBOUNCE_MS = 200
 
         /** 工具栏的 place 标识。 */
         const val TOOLBAR_PLACE = "SvnEnhanceMergeRevisions"
