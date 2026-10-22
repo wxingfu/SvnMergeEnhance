@@ -153,7 +153,9 @@ Enhance Merge 标签页（工作副本信息块列表）
 | 能力 | 使用的内置插件 API |
 |---|---|
 | 分支选择 | `SelectBranchPopup.showForBranchRoot(...)` + `SvnBranchConfigurationNew`（原版弹窗，零自绘） |
-| 修订日志 | `MergeCalculatorTask.loadChangeLists(ctx, cursor, size)`（游标分页，单通道；搜索词为客户端过滤，不改变服务端查询范围） |
+| 修订日志 | `SvnCommittedChangesProvider.getCommittedChanges(settings, location, size+1)`
+  （游标分页，单通道；**不走缓存**、实时查仓库；**只含源分支自身的修订**，不含合并源分支的副本；
+  搜索词为客户端过滤，不改变服务端查询范围） |
 | 列表渲染 | `TableView` + `ListTableModel` + `CommittedChangeListRenderer`（原版行渲染）+ `CommittedChangesBrowser` + `CommittedChangesTreeBrowser.collectChanges` |
 | 勾选语义 | `QuantitySelection<Long>`（稀疏表示：全选后排除个别） |
 | 合并状态 | `OneShotMergeInfoHelper(context)`（`MergeChecker`）+ `ListMergeStatus`（图标）/ `ChangeNodeDecorator`（`[Already merged]`） |
@@ -357,7 +359,8 @@ deprecation 会把构建卡死）。
 
 1. **内置 Subversion 插件（svn4idea）**：本插件直接调用的 14 个 API（`MergeContext`、`SvnIntegrateChangesTask`、
    `ChangeListsMergerFactory`、`LocalChangesPromptTask`、`QuickMerge`、`QuickMergeInteractionImpl`、
-   `OneShotMergeInfoHelper`、`MergeChecker`、`MergeCalculatorTask.loadChangeLists`、`SvnChangeList`、
+   `OneShotMergeInfoHelper`、`MergeChecker`、`SvnCommittedChangesProvider.getCommittedChanges`、
+   `ChangeBrowserSettings`（游标字段）、`SvnRepositoryLocation`、`SvnChangeList`、
    `SelectBranchPopup`、`SvnBranchConfigurationNew`、`QuantitySelection`、`SvnRepositoryLocation`）的签名，
    已与最新版 svn4idea 源码逐一比对，**与 2022.1 完全一致**。
    其中 `SvnBranchConfigurationNew` 已由 Java 改写为 Kotlin，`getRelativeUrl` 返回值改为可空——

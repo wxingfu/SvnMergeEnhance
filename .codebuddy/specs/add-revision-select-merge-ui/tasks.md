@@ -1,5 +1,11 @@
 # Tasks — Enhance Merge v2
 
+
+> ⚠️ **本文是历史轮次的实施档案**（v2 轮，2026-10-18/19）。其中的「唯一入口 = WC Info 面板注入链接」
+> 已随 **D1 ②（2026-10-22）删除**：入口唯一化为官方 `changesViewContentEP` 常驻标签页，
+> 反射注入入口 `WcInfoLinkInjector` / `EnhanceMergeAction` 均已删。
+> 现状见 `.codebuddy/specs/add-enhance-merge-tab/`（第六~七轮）与
+> `.codebuddy/specs/fix-revision-selection-perf/`（第八~九轮），以及规则文档「入口与包」。
 > 顺序执行。包 `com.weixf.svn.mergeenhance`，根目录 `d:\WorkSpace\AIProjects\SubversionEnhance\`。
 > 构建 JDK 11（`D:\softwares\Java\jdk-11.0.32.1`），`GRADLE_USER_HOME=G:\GradleRepository`，
 > `intellij { version="2022.1"; type="IC"; plugins=listOf("Subversion") }`，不引入 SVNKit。

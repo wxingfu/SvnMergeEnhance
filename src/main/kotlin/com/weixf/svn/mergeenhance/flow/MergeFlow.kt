@@ -38,8 +38,10 @@ import java.awt.Component
  *   但弹窗回调会把 `SvnBranchConfigurationNew`（public）交出来，足够完成 URL 换算。
  * - 换算规则与原版 `CopiesPanel.mergeFrom` 一致：
  *   `sourceUrl = branchUrl.appendPath(configuration.getRelativeUrl(wcInfo.url))`。
- * - 取日志复用原版 `MergeCalculatorTask.loadChangeLists`（public static，实时直连仓库、非缓存）——
- *   由 `LogPageLoader` 调用。
+ * - 取日志走 `SvnCommittedChangesProvider.getCommittedChanges`（public，**不走缓存**、实时查仓库；
+ *   内部 `includeMergedRevisions = false` → **只含源分支自身的修订**）。
+ *   ⚠️ **不照抄原版**：原版走 `getCommittedChangesWithMergedRevisons`（=true），
+ *   会把合并源分支的修订副本也带进清单（合并不进去、状态图标为空）——详见 `LogPageLoader`。
  *
  * ## 入口沿革（D1 ②，2026-10-22 已实施）
  *

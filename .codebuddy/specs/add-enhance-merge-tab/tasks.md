@@ -90,3 +90,15 @@
   `verifyOnIde 2022.1` → **PASS（0 issues）**；`runPluginVerifier` IC-221 + IC-262 → **均 Compatible**
   （仅既有 `ActionToolbar.updateActionsImmediately` 1 处 deprecated，非本次引入）。
 - 遗留：真实 IDE 沙箱人工走查（checklist B/C/D 节）。
+
+### 后续轮次（同一分支继续实施）
+
+- **第八轮（勾选正确性与性能整改）**：勾选集合数据源由「过滤视图」改为「已加载全集」（修数据丢失）；
+  右栏刷新改 200ms 防抖 + 后台线程；`loadedAll` 改不可变列表原子替换；dispose 中断在飞任务；
+  进度条「取消」真正中止分页；删除 `reloadToken` 死守卫等 5 项杂项。
+  ⚠️ 该轮**误把「批内同修订号」当重复删掉** → 有合并修订的分支上表格少行（真机验证到的「版本缺失」），
+  已在下一轮修复。详见 `.codebuddy/specs/fix-revision-selection-perf/`。
+- **第九轮（清单纯净度修复 · 不照抄原版缺陷）**：定位根因——原版 `getCommittedChangesWithMergedRevisons`
+  （includeMergedRevisons=true）把**合并源分支的修订副本**也带进清单（合并不进去、状态图标为 null）；
+  本插件改用 `getCommittedChanges`（只含源分支自身修订、不走缓存、游标语义一致）；
+  并恢复「状态无图标 → 回落刷新中图标」、合并状态任务不再被「+N」取消。

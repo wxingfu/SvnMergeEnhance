@@ -1,5 +1,5 @@
 ---
-description: SVN Enhance Merge 插件（SvnMergeEnhance）的构建与实现约束：JDK 11、IDEA 2022.1 IC SDK、必须显式依赖 Subversion 插件、禁用 SVNKit、取日志必须直连仓库
+description: SVN Enhance Merge 插件（SvnMergeEnhance）的构建与实现约束：JDK 11、IDEA 2022.1 IC SDK、必须显式依赖 Subversion 插件、禁用 SVNKit、取日志必须直连仓库且只含源分支自身修订、不照抄原版缺陷
 globs:
   - "src/**/*.kt"
   - "src/main/resources/META-INF/**"
@@ -11,8 +11,14 @@ alwaysApply: false
 
 # SVN Enhance Merge 插件（SvnMergeEnhance）约束
 
-在 IDEA 内置 Subversion 插件之上提供并列的第二种合并入口「Enhance Merge…」（分支选择 → 合并方式 → 版本选择 → 合并）。
+在 IDEA 内置 Subversion 插件之上提供**并列的常驻标签页**「Enhance Merge」（VCS 工具窗内，与
+「Subversion Working Copies Information」并列）：工作副本信息块 → 「Merge From…」→ 分支选择 →
+合并方式 → 模态版本选择 → 合并。
 **不 fork、不修改 `plugins/svn4idea` 源码**。
+
+> ⚠️ **原版（svn4idea）自身有缺陷**：其版本选择清单会混入「合并源分支的修订副本」，
+> 导致这些条目**合并不进去**、且状态图标为空（用户观感为「版本缺失」）。
+> **本项目做法**：分析原版源码定位根因，**修掉缺陷而不照抄**（见「SVN API 用法 · 取日志」）。
 
 ## 参考源码路径（本机固定，勿再搜索别处）
 
@@ -24,6 +30,7 @@ alwaysApply: false
   - 版本选择对话框 / +100、+500 动作：`plugins\svn4idea\src\org\jetbrains\idea\svn\integrate\ToBeMergedDialog.java`
   - 分页取日志：同目录 `MergeCalculatorTask.java`、`history\SvnCommittedChangesProvider.java`
   - 合并执行：同目录 `SvnIntegrateChangesTask.java`、`ChangeListsMergerFactory.java`
+  - **查原版只为定位根因，不照抄**：清单口径 / 状态图标 / 选中语义原版都有已知缺陷（见上）
 
 ## 构建与环境（不可偏离）
 
@@ -153,8 +160,9 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 
 ### 代码规范（官方插件开发规范，2026-10-18 全量审查后固化）
 
-**反射是本项目唯一被允许的“非公开 API”**（`WcInfoLinkInjector` 取 `WCInfo`，
-`EnhanceMergeBundle` 跨版本取语言包），其余一律走公开 API + `JBUI`/`UIUtil`/平台组件。
+**反射是本项目唯一被允许的“非公开 API”**，且只剩**一处**（`EnhanceMergeBundle` 跨版本取语言包）；
+其余一律走公开 API + `JBUI`/`UIUtil`/平台组件。
+（反射注入链接的 `WcInfoLinkInjector` 已按 D1 ② 删除——入口唯一化为官方 `changesViewContentEP` 标签页。）
 
 - **禁用 `javax.swing.Timer`**（官方明令）：一律用 `com.intellij.util.Alarm`，且必须给父 `Disposable`
   （`Alarm(ThreadToUse.SWING_THREAD, disposable)`）；Swing Timer 不受 Disposer 管、关闭后仍会回调。
@@ -214,11 +222,20 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 
 ## SVN API 用法（复用公开 API，勿用内部类）
 
-- 取日志（**直连仓库、分页、非全量**）：`MergeCalculatorTask.loadChangeLists(mergeContext, beforeRevision, size)`
-  → `Pair<List<SvnChangeList>, Boolean>`；首屏 `beforeRevision=-1`、`size=100`（与 TortoiseSVN `NumberOfLogs` 默认值一致），翻页游标 = 上一页末条修订号。
-  底层为 `SvnCommittedChangesProvider.getCommittedChangesWithMergedRevisions(settings, location, maxCount, consumer)`，
-  最终落到 `HistoryClient.doLog(...)`；**禁止** `limit=0` 全量拉取，**禁止**走 `CachedProvider`/`LoadedRevisionsCache`。
-  失败须可重试，关闭返回上一步且无副作用。
+- 取日志（**直连仓库、分页、非全量、只含源分支自身修订**）：
+  `SvnCommittedChangesProvider.getCommittedChanges(settings, location, size + 1)` → `List<SvnChangeList>`。
+  游标用 `ChangeBrowserSettings.CHANGE_BEFORE` + `USE_CHANGE_BEFORE_FILTER`（首屏 = -1 不设过滤；
+  翻页游标 = 上一页末条修订号），`size=100`（与 TortoiseSVN `NumberOfLogs` 默认值一致），
+  多取一条判定「是否还有更多」。底层 `getCommittedChangesImpl(..., includeMergedRevisions = false, ...)`
+  → `HistoryClient.doLog(...)`，**不走缓存**（未碰 `CachedProvider` / `LoadedRevisionsCache`）；
+  **禁止** `limit=0` 全量拉取。失败须可重试，关闭返回上一步且无副作用。
+- **⛔ 禁止使用 `getCommittedChangesWithMergedRevisons`（原版口径，includeMergedRevisons=true）**：
+  它经 `SvnMergeSourceTracker` + `MergeSourceHierarchyBuilder` 把**合并源分支**的修订也产出
+  （=「同一需求在别的分支上的副本」，路径相对源分支、提交说明与目标分支那条重复）。这些副本：
+  ① 对目标路径做 mergeinfo 检查一律 `NOT_EXISTS` → 状态 `ALIEN`，而 svn4idea 的 `ALIEN` **图标为 null**
+  → 列表出现「行首没有状态图标」的条目；② 在目标分支上并不存在 → **合并不进去**（原版照样让勾选）
+  → 用户观感「选了这个版本，合并后什么都没发生」= **版本缺失**。**这是原版自身的缺陷，本项目不照抄。**
+  回归由 `LogPageLoaderTest` 断言「绝不调用该接口」看守。
 - 分支枚举：**直接复用** `SelectBranchPopup.showForBranchRoot(project, root, BranchSelectedCallback, title, anchor)`（public），
   回调里用 `SvnBranchConfigurationNew.getRelativeUrl(url)` + `Url.appendPath(rel, false)` 换算目标分支对应 URL。
   **禁止**引用 internal 的 `SvnBranchConfigurationManager`。
@@ -233,17 +250,18 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 ## 入口与包
 
 - 包：`com.weixf.svn.mergeenhance`。
-- **唯一入口**：「Version Controls」→「Subversion Working Copies Information」面板中，
-  每个工作副本的「Merge From…」下方注入的 **Enhance Merge…** 链接（运行时 UI 注入，不改 svn4idea 源码）。
-- **不再注册**任何 `<action>`：不挂 `SubversionGroup` / `Vcs.Operations.Popup`（2026-10-18 决策）。
-  `EnhanceMergeAction` **已改为普通类**（不再继承 `AnAction`）：它从未注册到任何菜单，
-  继承 `AnAction` 会留下永不执行的 `update()`/`actionPerformed()` 死代码。
-  注入链接（`WcInfoLinkInjector`）直接调用其 `performFor(project, wcInfo, anchor)`；
-  "仅 SVN 工作副本下可用"由入口链接只出现在 SVN 面板 + `MergeFlow.start` 的双保险保证。
-- 入口实现类：文件 `wcinfo/WcInfoLinkInjector.kt`（public `WcInfoLinkInjector` = `StartupActivity.DumbAware`，
-  plugin.xml 注册的 implementation），内含 private `LinkInstaller` 持有 Timer/messageBus。
-  dispose 时除停 Timer 外，**还要移除自己注入的 `LinkLabel`**（`removeInjectedLinks()`），
-  官方要求插件清理自己挂到界面上的东西。
+- **唯一入口**：官方 `changesViewContentEP` 注册的**常驻标签页**「Enhance Merge」
+  （VCS 工具窗内，与「Subversion Working Copies Information」并列）。
+  - 可见性谓词用官方写法 `ProjectLevelVcsManager.checkVcsIsActive(SvnVcs.VCS_NAME)`；
+  - 标签名由 `DisplayNameSupplier` 本地化（走 `EnhanceMergeBundle`，语言包感知）——
+    EP 上刻意**不写** `displayName` 字面量（避免绕过语言判定）。
+  - 纯公开 API、**零反射注入其它插件**、零轮询、零 `<action>` 注册。
+- **⛔ 反射注入入口已按 D1 ② 删除**（`wcinfo/WcInfoLinkInjector` / `EnhanceMergeAction`）：
+  原入口靠反射调 `WorkingCopyInfoPanel.getInfo()` + 2s 定时器扫组件树注入链接，
+  属官方规范与上架审核的实质风险点（反射注入其它插件）。随之删除的还有整条已无调用方的模态链路
+  （`MergeVariantDialog` / `RevisionSelectDialog` / `MergeFlow.start` / `MergeFlow.openRevisionSelect`）。
+  入口实现类：`tab/EnhanceMergeTabContent`（ChangesViewContentProvider）+ `tab/EnhanceMergePanel`（主体）
+  + `tab/WcInfoPanel`（工作副本信息块）+ `EnhanceMergeStartup`（仅打印一行 i18n 日志，作为 verify 就绪信号）。
 - 用户可见字符串走 `messages/*.properties` bundle，不硬编码。
 - **本地化必须语言包感知**（`EnhanceMergeBundle` 已实现，勿改回 `extends DynamicBundle` 默认解析）：
   - 语言包探测：`findLanguageBundle()` 非 null ⇒ 已装语言包，用 `DynamicBundle.getLocale()` 精确匹配；
@@ -279,30 +297,40 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   `checkList()` 在后台写、`getNotMergedPaths()` 在 EDT 读。故 `prepare()` / `checkList()` /
   `getNotMergedPaths()` 必须走同一个 `mergeCheckerLock`；`checkList` 要**逐行加锁**（锁整批会让
   EDT 等几百行算完而卡 UI），EDT 侧在 `mergeCheckerPrepared == false` 时直接返回空、不进锁
-  （否则要等一次 svn 调用冻住界面）。原版只有一个后台任务在算，本插件首屏 / +N /
-  全部显示会并发起多个，风险比原版更高（⚠️ 第四轮删除「搜索扩充」后并发源少一个）。
+  （否则要等一次 svn 调用冻住界面）。原版只有一个后台任务在算；本插件首屏 / +N 会并发起多个，**且第九轮起刻意不取消旧任务**
+  （取消会让先加载那批修订永远缺状态图标），并发数更高——靠 `mergeCheckerLock` 逐行加锁串行化。
 - 按键消费（`e.consume()`）必须写在 `keyPressed`——写在 `keyReleased` 不起作用。
 - 纯图标按钮必须给 `accessibleContext.accessibleName`（官方无障碍要求）。
 
 ## 实现状态与文档
 
 **v2 已全部实现并通过官方校验**（2026-10-18）。此后历经 R1~R4 修复（2026-10-19）、
-第三/四轮过滤解耦（2026-10-20），并于 **2026-10-21 实施第五轮「原版化 + 显式搜索框」**
-（详见下方第五节；TortoiseSVN 式过滤设施已整体移除）。v1 的 `BranchSelectionDialog`、
+第三/四轮过滤解耦（2026-10-20）、**第五轮「原版化 + 显式搜索框」（2026-10-21）**、
+**第六轮「常驻标签页 + 修订选择面板化」（2026-10-22）**、**D1 ② 入口唯一化（删反射注入，2026-10-22）**、
+**第七轮「复刻 Working Copies Information 面板 + 恢复模态修订选择 + 复刻 Cleanup」（2026-10-22）**、
+**第八轮「勾选正确性与性能整改」（2026-10-22）**、**第九轮「清单纯净度修复（不照抄原版缺陷）」（2026-10-22）**。
+各轮方案/需求/任务/验收见 `.codebuddy/plan/` 与 `.codebuddy/specs/`（索引见文末）。v1 的 `BranchSelectionDialog`、
 `MergeMethodSelectionDialog`、`RevisionLogDataSource`、`RevisionItem`、
 `SvnRevisionMergeExecutor`、`WcInfoPanelLinkInjector` 均已删除；第四轮的 `ui/RevRangeDialog`、
 第五轮的 `ui/LogFilterPanel` / `log/LogFilterField` 亦已删除。
 
-实际类清单：
+实际类清单（2026-10-22，第九轮后）：
 
-- `wcinfo/WcInfoLinkInjector`（入口 `StartupActivity.DumbAware`，内含 private `LinkInstaller`）、`EnhanceMergeAction`（普通类）、`EnhanceMergeBundle`
-- `flow/MergeFlow`、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`、`ui/RevisionSearchField`
-- `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`
-- `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
+- `EnhanceMergeBundle`、`EnhanceMergeStartup`（启动期仅打印一行 i18n 日志，作为 verify 就绪信号）
+- `tab/EnhanceMergeTabContent`（ChangesViewContentProvider + 可见性谓词 + 标签名）、
+  `tab/EnhanceMergePanel`（主体：工作副本列表 + 每块「Merge From…」）、
+  `tab/WcInfoPanel`（工作副本信息块，用平台 `HtmlPanel` 复刻原版渲染）
+- `flow/MergeFlow`（分支选择 + 模态修订选择编排）、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`（模态薄包装）、
+  `ui/RevisionSelectPanel`（修订选择面板）、`ui/RevisionSearchField`、
+  `ui/RevisionSelection`（勾选语义纯逻辑，可单测）、`ui/RevisionAccumulator`（已加载全集累积/去重语义，可单测）
+- `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`、
+  `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
+- **已删除**（D1 ② 入口唯一化）：`wcinfo/WcInfoLinkInjector`、`EnhanceMergeAction`
 
-单测：`LogFilterTest`(8) + `LogPageLoaderTest`(12) + `QuantitySelectionTest`(9) + `EnhanceMergeBundleTest`(3)
-+ `BundleKeysTest`(3) + `EnhanceMergeSettingsTest`(4) = **39**（第五轮后；此前为 60）。
-（旧文档里的 12 / 53 / 55 / 63 均已落后，以 39 为准。）
+单测（2026-10-22）：`LogFilterTest`(8) + `LogPageLoaderTest`(14) + `QuantitySelectionTest`(9) +
+`EnhanceMergeBundleTest`(3) + `BundleKeysTest`(5) + `EnhanceMergeSettingsTest`(4) +
+`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) = **54**（第九轮后）。
+（旧文档里的 12 / 39 / 53 / 55 / 60 / 63 均已落后，以 **54** 为准。）
 
 ### 2026-10-21 原版化 + 显式搜索框（第五轮 · **已实施**）
 
@@ -542,15 +570,26 @@ TortoiseSVN 的 `LogDlg` 里，**搜索/过滤从不触发服务器请求**：`m
   - 需求规格（v2）`.codebuddy/specs/add-revision-select-merge-ui/spec.md`
   - 任务拆解（v2）`.codebuddy/specs/add-revision-select-merge-ui/tasks.md`
   - 验收清单（v2）`.codebuddy/specs/add-revision-select-merge-ui/checklist.md`
+  - 方案（第五轮：原版化 + 显式搜索框）`.codebuddy/plan/RevisionSelect-AlignOriginal-AddSearch-plan.md`
+    + `.codebuddy/specs/add-revision-search-filter/{spec,tasks,checklist}.md`
+  - 方案（第六~七轮：常驻标签页 / 复刻 WC Info 面板）`.codebuddy/plan/EnhanceMerge-ToolwindowTab-plan.md`
+    + `.codebuddy/specs/add-enhance-merge-tab/{spec,tasks,checklist}.md`
+  - 方案（第八~九轮：勾选正确性·性能整改 / 清单纯净度，**不照抄原版缺陷**）`.codebuddy/plan/RevisionSelect-Correctness-Perf-plan.md`
+    + `.codebuddy/specs/fix-revision-selection-perf/{spec,tasks,checklist}.md`
 
 ## v2 关键复用约定（已从 svn4idea 源码核实可见性）
 
 - 分支弹窗：`SelectBranchPopup.showForBranchRoot(...)`（public）→ 回调给 `SvnBranchConfigurationNew`（public）。
-- 分页日志：`MergeCalculatorTask.loadChangeLists(ctx, beforeRevision, size)`（public static），实时直连、非缓存。
+- 分页日志：`SvnCommittedChangesProvider.getCommittedChanges(settings, location, size+1)`（public），实时直连、
+  **不走缓存**、**只含源分支自身修订**（⛔ 不用原版口径 `getCommittedChangesWithMergedRevisons`，见「SVN API 用法」）。
 - 列表渲染：`TableView` + `ListTableModel` + `CommittedChangeListRenderer` + `CommittedChangesBrowser` + `Splitter`。
 - 勾选语义：`QuantitySelection<Long>`（public）。
 - 合并执行：`SvnIntegrateChangesTask` + `ChangeListsMergerFactory`（均 public），含冲突解决与 VFS 刷新。
-- 已合并状态（T8，已实现，**默认开启、无开关**）：复用原版 `OneShotMergeInfoHelper(context)`（`MergeChecker` 接口实现）+ `ListMergeStatus`，**行为对齐 `ToBeMergedDialog.refreshListStatus`**：对话框 `init` 即触发后台计算，分批对每个 `SvnChangeList` 调 `mergeChecker.checkList()`，经 `toListMergeStatus`（`MERGED→MERGED` / `NOT_EXISTS→ALIEN` / 其余→`REFRESHING`）映射后存入 `mergeStatusMap`；列表每行在 `RevisionCellRenderer` 中用 `status.icon` 显示状态图标（已合并 / 外来 / 刷新中）。图标与语义与原版完全一致，**不得自创状态判定或图标**。原 spec 的「开关默认关闭」已按需求改为默认开启。
+- 已合并状态（T8，已实现，**默认开启、无开关**）：复用原版 `OneShotMergeInfoHelper(context)`（`MergeChecker` 接口实现）+ `ListMergeStatus`，**行为对齐 `ToBeMergedDialog.refreshListStatus`**：对话框 `init` 即触发后台计算，分批对每个 `SvnChangeList` 调 `mergeChecker.checkList()`，经 `toListMergeStatus`（`MERGED→MERGED` / `NOT_EXISTS→ALIEN` / 其余→`REFRESHING`）映射后存入 `mergeStatusMap`；
+  列表每行用 `status.icon` 显示状态图标。⚠️ **svn4idea 的 `ALIEN` 图标为 null**——渲染时必须回落
+  「刷新中」图标（`mergeStatusMap[number]?.icon ?: ListMergeStatus.REFRESHING.icon`），否则整行**无状态图标**，
+  用户观感就是「版本缺失」。**此处不照抄原版缺陷**（第九轮修）。
+  另：合并状态计算任务**不得被后续「+N」取消**（否则先加载那批修订永远缺状态图标）；并发由 `mergeCheckerLock` 串行化。原 spec 的「开关默认关闭」已按需求改为默认开启。
 - T8 右栏文件标记：`CommittedChangesBrowser.setChangeNodeDecorator(...)` 中 `preDecorate` 对 `alreadyMerged.contains(change)` 追加 `[Already merged]`；集合在 `onListSelectionChanged()` 里用 `mergeChecker.getNotMergedPaths(list)` 的**补集**填充（对齐 `ToBeMergedDialog.getAlreadyMergedPaths`）。`prepare()` 完成后需再触发一次 `onListSelectionChanged()`，否则首次选中时标记缺失。
 - T8 布局约束：**复选框必须位于单元格最左（`BorderLayout.WEST`）**，状态图标放其后（`JLabel` + 右侧空边），因为 `installCheckboxClick()` 的命中区是 `Rectangle(cell.x, cell.y, checkboxWidth, cell.height)`（原版同构）。若把图标放在复选框左侧，鼠标点击会与视觉错位而无法勾选。
 - 禁用：`SvnBranchConfigurationManager`（internal）、`QuickMerge`、`ToBeMergedDialog`（不可改造）。
@@ -565,7 +604,8 @@ TortoiseSVN 的 `LogDlg` 里，**搜索/过滤从不触发服务器请求**：`m
 `LocalChangesPromptTask(QuickMerge, List<SvnChangeList>, Runnable)`、
 `QuickMerge(MergeContext, QuickMergeInteraction)`、`QuickMergeInteractionImpl(MergeContext)`、
 `OneShotMergeInfoHelper(MergeContext)`、`MergeChecker(prepare/checkList/getNotMergedPaths)`、
-`MergeCalculatorTask.loadChangeLists(MergeContext, long, int)`(static)、
+`SvnCommittedChangesProvider.getCommittedChanges(ChangeBrowserSettings, RepositoryLocation, int)`、
+`ChangeBrowserSettings(CHANGE_BEFORE/USE_CHANGE_BEFORE_FILTER/STOP_ON_COPY)`、
 `SvnChangeList(getNumber/getComment/getAffectedPaths/getByPath)`、
 `SelectBranchPopup.showForBranchRoot(Project, VirtualFile, BranchSelectedCallback, String[, Component])`、
 `SvnBranchConfigurationNew(getRelativeUrl 等)`、`QuantitySelection(boolean)`、

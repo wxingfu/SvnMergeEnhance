@@ -4,6 +4,7 @@
 > 需求编号见同目录 `spec.md`。
 >
 > **状态（2026-10-22）**：A 节（构建/静态）已通过；B/C/D 节（沙箱人工）待真实 IDE 走查。
+> 第八~九轮的整改验收见 `.codebuddy/specs/fix-revision-selection-perf/checklist.md`（B/C/D/E/F 节）。
 
 ## A. 构建与静态验收
 
@@ -32,6 +33,7 @@
 
 - [ ] C1 每个工作副本行有**加粗的「Merge From…」链接**（不是「Enhance Merge…」/「Select Branch…」）
 - [ ] C2 点「Merge From…」→ 弹出原版分支选择（trunk / branches / Configure Branches…）
+- [ ] C2.5 选分支后 → 先弹「Select Merge Variant」（对齐原版步骤）→ 再弹模态修订选择
 - [ ] C3 选分支后 → 弹出**模态 `RevisionSelectDialog`**（搜索框 / 表格 / 工具栏四动作 / +N / 合并状态 /
       右栏变更树 / `[Already merged]` 与之前一致；标题 `Merge from <branch>`）
 - [ ] C4 对话框可缩放、尺寸记忆生效；无 `MergeVariantDialog` 中间步骤

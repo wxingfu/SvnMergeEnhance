@@ -53,7 +53,8 @@ import org.jetbrains.idea.svn.integrate.MergeContext
 class LogPageLoader(
     private val context: MergeContext,
     /**
-     * 数据源（**注入点，测试用**）。为 null 时走原版 `MergeCalculatorTask.loadChangeLists`。
+     * 数据源（**注入点，测试用**）。为 null 时走 `SvnCommittedChangesProvider.getCommittedChanges`
+     * （只含源分支自身修订、不走缓存，见 [loadOwnBranchRevisions]）。
      * @return 原始页 + 平台「是否还有更多」判定
      */
     private val cursorSource: ((cursor: Long, size: Int) -> Pair<List<SvnChangeList>, Boolean>)? = null,

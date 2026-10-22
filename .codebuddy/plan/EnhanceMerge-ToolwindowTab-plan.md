@@ -211,3 +211,16 @@ dispose 路径不因 `project.isDisposed` 提前返回。
 - [ ] `CHANGELOG.md`：新增「第七轮」条目；
 - [ ] 规则文档 `.codebuddy/rules/svn-enhance-merge.mdc`：新增第七轮记录；
 - [ ] 本文档标注「已实施」并补验证结果；`spec/tasks/checklist` 全勾选。
+
+### 7.x 原版「版本选择清单」的已知缺陷（第九轮定位，**不照抄**）
+
+原版合并对话框的清单会混入「**合并源分支的修订副本**」：取数走
+`MergeCalculatorTask.loadChangeLists` → `getCommittedChangesWithMergedRevisons`
+（内部 `includeMergedRevisons = true`），经 `SvnMergeSourceTracker` + `MergeSourceHierarchyBuilder`
+把合并源分支的修订一并产出（=「同一需求在别的分支上的副本」，路径相对源分支、提交说明重复）。
+后果：① 这些副本对目标路径做 mergeinfo 检查一律 `NOT_EXISTS` → 状态 `ALIEN`，
+而 svn4idea 的 `ALIEN` **图标为 null** → 列表出现「行首没有状态图标」的条目；
+② 它们在目标分支上并不存在 → **合并不进去**（原版照样让勾选）→ 用户观感「版本缺失」。
+
+**本插件的做法**：清单只取**源分支自身**的修订（`getCommittedChanges`，`includeMergedRevisons=false`，
+且不走缓存），并保证每行都有状态图标。回归由 `LogPageLoaderTest` 断言「绝不调用含合并修订的接口」看守。
