@@ -29,3 +29,6 @@ Thumbs.db
 # 日志与一次性脚本
 *.log
 tmp_*.py
+
+# 取证用临时目录（javap/解包 class），禁止入库
+.codebuddy/tmp-jar/
