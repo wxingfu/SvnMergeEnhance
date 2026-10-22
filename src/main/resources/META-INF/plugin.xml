@@ -110,11 +110,13 @@ Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.<
 
     <extensions defaultExtensionNs="com.intellij">
         <!--
-          常驻入口（第六轮）：经官方 changesViewContentEP 在 VCS 工具窗注册「Enhance Merge」标签页，
+          唯一入口（第六轮 + D1 ②）：经官方 changesViewContentEP 在 VCS 工具窗注册「Enhance Merge」标签页，
           与「Subversion Working Copies Information」并列。纯公开 API、零反射、零轮询。
           - 不设 isInCommitToolWindow：与 WC Info 标签一致，出现在同一个工具窗；
           - 标签名由 DisplayNameSupplier 本地化（EnhanceMergeBundle 语言包感知），
             EP 上刻意不写 displayName 字面量（避免绕过本插件的语言判定）。
+          - 旧的反射注入入口（WcInfoLinkInjector）已按 D1 ② 删除，
+            本插件不再反射注入任何其它插件，也不再注册任何 <action>。
         -->
         <changesViewContent
             tabName="Enhance Merge"
@@ -123,12 +125,10 @@ Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.<
             displayNameSupplierClassName="com.weixf.svn.mergeenhance.tab.EnhanceMergeTabContent$DisplayNameSupplier"/>
 
         <!--
-          便捷入口（保留）：把「Enhance Merge…」链接注入内置 SVN 插件的
-          「Subversion Working Copies Information」标签页（紧跟「Merge From…」下方）。
-          运行时定位 WorkingCopyInfoPanel 并向其表格追加一行，不修改 svn4idea 源码。
-          与上方常驻标签页并存（决策项 D1，默认并存）；移除注入入口列为上架前独立决策。
+          启动期诊断：仅打印一行 `EnhanceMerge i18n` 日志（语言包 / locale 判定），
+          作为 scripts/verify-plugin.ps1 的「插件已加载」就绪信号；不做任何 UI 注入 / 反射 / 轮询。
         -->
-        <postStartupActivity implementation="com.weixf.svn.mergeenhance.wcinfo.WcInfoLinkInjector"/>
+        <postStartupActivity implementation="com.weixf.svn.mergeenhance.EnhanceMergeStartup"/>
 
         <!--
           设置页（T9 / Spec R11）：Settings → Version Control → SVN Enhance Merge。

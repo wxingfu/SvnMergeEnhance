@@ -1,36 +1,26 @@
 package com.weixf.svn.mergeenhance.flow
 
-import com.intellij.openapi.progress.ProgressIndicator
-import com.intellij.openapi.progress.ProgressManager
-import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.VirtualFile
 import com.weixf.svn.mergeenhance.EnhanceMergeBundle
-import com.weixf.svn.mergeenhance.log.LogPageLoader
-import com.weixf.svn.mergeenhance.merge.MergeExecutor
-import com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings
-import com.weixf.svn.mergeenhance.ui.MergeVariantDialog
-import com.weixf.svn.mergeenhance.ui.RevisionSelectDialog
 import org.jetbrains.idea.svn.SvnUtil
 import org.jetbrains.idea.svn.SvnVcs
 import org.jetbrains.idea.svn.api.Url
 import org.jetbrains.idea.svn.branchConfig.SelectBranchPopup
 import org.jetbrains.idea.svn.branchConfig.SvnBranchConfigurationNew
 import org.jetbrains.idea.svn.dialogs.WCInfo
-import org.jetbrains.idea.svn.history.SvnChangeList
 import org.jetbrains.idea.svn.integrate.MergeContext
 import java.awt.Component
 
 /**
- * Enhance Merge 全流程编排：
+ * Enhance Merge 流程编排（第六轮起入口唯一化 = 常驻标签页）。
  *
  * ```
- * WC 面板链接 / EnhanceMergeAction
+ * Enhance Merge 标签页（EnhanceMergePanel）
  *   └─ ① SelectBranchPopup（图2，复用原版弹窗）
- *        └─ ② MergeVariantDialog（图3，仅 Revision Select + Cancel）
- *             └─ ③ RevisionSelectDialog（图4，原版布局 + 关键词搜索过滤 + 实时分页）  ← T4–T6
- *                  └─ ④ MergeExecutor（复用 SvnIntegrateChangesTask）                  ← T7
+ *        └─ ② 首屏加载修订（标签页内 RevisionSelectPanel；取日志走 LogPageLoader）  ← T4–T6
+ *             └─ ③ MergeExecutor（复用 SvnIntegrateChangesTask）                    ← T7
  * ```
  *
  * 设计要点：
@@ -40,44 +30,38 @@ import java.awt.Component
  *   但弹窗回调会把 `SvnBranchConfigurationNew`（public）交出来，足够完成 URL 换算。
  * - 换算规则与原版 `CopiesPanel.mergeFrom` 一致：
  *   `sourceUrl = branchUrl.appendPath(configuration.getRelativeUrl(wcInfo.url))`。
- * - 取日志复用原版 `MergeCalculatorTask.loadChangeLists`（public static，实时直连仓库、非缓存）。
+ * - 取日志复用原版 `MergeCalculatorTask.loadChangeLists`（public static，实时直连仓库、非缓存）——
+ *   由标签页内的 `LogPageLoader` 调用。
+ *
+ * ## 入口沿革（D1 ②，2026-10-22 已实施）
+ *
+ * 早期唯一入口是「Subversion Working Copies Information」面板里反射注入的链接（`WcInfoLinkInjector`），
+ * 走 `MergeFlow.start → MergeVariantDialog → RevisionSelectDialog` 的模态流。第六轮新增官方
+ * `changesViewContentEP` 标签页后，为满足「不反射注入其他插件」的上架规范，已按 D1 ②
+ * **删除注入入口及其整条模态链路**（`WcInfoLinkInjector` / `EnhanceMergeAction` /
+ * `MergeVariantDialog` / `RevisionSelectDialog` / `MergeFlow.start` / `MergeFlow.openRevisionSelect`），
+ * 现**唯一入口 = 标签页**，本类只保留 [selectBranch] 供标签页调用。
  */
 object MergeFlow {
 
-    /** 对话框标题（T9.4：不再硬编码，走本地化 bundle）。 */
+    /** 弹窗标题（T9.4：不再硬编码，走本地化 bundle）。 */
     private val TITLE: String
         get() = EnhanceMergeBundle.message("title.enhance.merge")
 
     /**
-     * 启动流程：校验工作副本根 → 弹出分支选择（图2）。
+     * 分支选择入口：校验工作副本根 → 弹出分支选择（[SelectBranchPopup]）→ URL 换算 → 守卫 →
+     * 回调 [onContext]（得到换算好的 [MergeContext]）。
      *
-     * @param project 当前项目
-     * @param wcInfo  目标工作副本（来自面板链接所点击的那一个）
-     * @param anchor  弹窗锚点组件（面板链接本身）；为 null 时弹窗居中显示
+     * @param project  当前项目
+     * @param wcInfo   目标工作副本（来自标签页根选择器所选的那一个）
+     * @param anchor   弹窗锚点组件（标签页里的「Select Branch…」按钮）
+     * @param onContext 分支选定且 URL 换算成功后回调；标签页在回调里加载首屏并建 `RevisionSelectPanel`
      *
      * `root.isValid` 校验的原因：后续 `SvnBranchConfigurationNew.getRelativeUrl()` 与
      * `MergeContext` 都要用 VirtualFile；无效根（目录被删除/移动）时原版分支弹窗会自己抛异常，
      * 这里提前拦下并给出可读提示，比让用户看到堆栈友好。
      * `SvnVcs.getInstance(project) ?: return` 同理——非 SVN 项目直接静默退出
-     * （入口链接本就只出现在 SVN 工作副本面板里，这是双保险）。
-     */
-    fun start(project: Project, wcInfo: WCInfo, anchor: Component?) {
-        selectBranch(project, wcInfo, anchor) { context ->
-            // 链接入口保留「合并方式选择」这一步（常驻标签页入口不经过它）
-            when (MergeVariantDialog(project).showDialog()) {
-                MergeVariantDialog.Variant.REVISION_SELECT -> openRevisionSelect(context)
-                MergeVariantDialog.Variant.CANCEL -> Unit
-            }
-        }
-    }
-
-    /**
-     * 可复用的「分支选择」入口：根校验 → 分支弹窗（[SelectBranchPopup]）→ URL 换算 → 守卫 →
-     * 回调 [onContext]（得到换算好的 [MergeContext]）。
-     *
-     * 第六轮抽出，供链接入口与常驻标签页入口共用：
-     * - 链接入口（[start]）在回调里走 `MergeVariantDialog → openRevisionSelect`；
-     * - 标签页入口（`EnhanceMergePanel`）在回调里直接加载首屏并建 `RevisionSelectPanel`（不经 [MergeVariantDialog]）。
+     * （标签页本身只在 SVN 项目显示，这是双保险）。
      */
     fun selectBranch(project: Project, wcInfo: WCInfo, anchor: Component?, onContext: (MergeContext) -> Unit) {
         val vcs = SvnVcs.getInstance(project) ?: return
@@ -100,64 +84,6 @@ object MergeFlow {
             EnhanceMergeBundle.message("popup.title.select.branch"),
             anchor,
         )
-    }
-
-    /**
-     * 后台加载首屏修订日志，完成后在 EDT 打开修订选择对话框（图4）。
-     * 加载失败给出错误说明，关闭对话框无副作用。
-     */
-    private fun openRevisionSelect(context: MergeContext) {
-        val loader = LogPageLoader(context)
-
-        ProgressManager.getInstance().run(object : Task.Backgroundable(
-            context.project,
-            EnhanceMergeBundle.message("progress.loading.revisions"),
-            true,
-        ) {
-            private var items: List<SvnChangeList> = emptyList()
-
-            override fun run(indicator: ProgressIndicator) {
-                indicator.isIndeterminate = true
-                // 首屏：加载器刚创建、世代号即 0，游标从 HEAD 开始
-                items = loader.loadNextPageRaw(EnhanceMergeSettings.getInstance().pageSize, loader.snapshot())
-            }
-
-            override fun onSuccess() {
-                // 后台加载期间项目可能已被关闭：此时既不该弹提示，也不该再建对话框
-                if (context.project.isDisposed) return
-                if (items.isEmpty()) {
-                    Messages.showInfoMessage(
-                        context.project,
-                        EnhanceMergeBundle.message("message.no.revisions"),
-                        TITLE,
-                    )
-                    return
-                }
-
-                val dialog = RevisionSelectDialog(context, loader, items)
-                if (!dialog.showAndGet()) return
-
-                val selected = dialog.selectedChangeLists()
-                if (selected.isEmpty()) return
-
-                // T7：先走原版「合并前本地改动提示」，确认后再执行合并（与原版 QuickMerge 流程一致）
-                MergeExecutor.mergeWithLocalChangesPrompt(context, selected)
-            }
-
-            override fun onThrowable(error: Throwable) {
-                // 同 onSuccess：项目已关闭时不再对已释放的 project 弹模态错误框
-                // （`Project` 被释放后再取 modality / 窗口父级会抛 AlreadyDisposedException）
-                if (context.project.isDisposed) return
-                Messages.showErrorDialog(
-                    context.project,
-                    EnhanceMergeBundle.message(
-                        "error.load.revisions",
-                        error.message ?: error.javaClass.simpleName,
-                    ),
-                    TITLE,
-                )
-            }
-        })
     }
 
     private class BranchSelectedHandler(

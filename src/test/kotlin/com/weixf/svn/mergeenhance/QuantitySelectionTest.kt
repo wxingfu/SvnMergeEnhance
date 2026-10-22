@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
  * - 从「全不选」起点的实例：默认全部未选，`selected` 为勾选集；
  * - `setAll()` / `clearAll()` 切换起点并清空另一侧。
  *
- * 为什么值得测一个"只是复用"的类：`RevisionSelectDialog.selectedChangeLists()` 的正确性
+ * 为什么值得测一个"只是复用"的类：`RevisionSelectPanel.selectedChangeLists()` 的正确性
  * **完全依赖** `areAllSelected()` 的原版语义——它在 selectAll 起点下恒为 true，
  * 于是"全选后排除个别"必须走 `unselected` 排除集分支。若有人"修正"这个看似奇怪的行为，
  * 勾选会静默退化（全选后得到空列表）。本测试类把该语义钉死。
@@ -89,7 +89,7 @@ class QuantitySelectionTest {
         assertTrue(selection.isSelected(6L))
         assertTrue(selection.isSelected(100L))
         // 注意（原版语义）：areAllSelected() 只表示「起点为全选」，排除个别项不会改变它。
-        // RevisionSelectDialog.selectedChangeLists() 正是靠它走「排除集」分支，故此行为必须固化。
+        // RevisionSelectPanel.selectedChangeLists() 正是靠它走「排除集」分支，故此行为必须固化。
         assertTrue(selection.areAllSelected())
         assertTrue(selection.unselected.containsAll(setOf(5L, 7L)))
     }
