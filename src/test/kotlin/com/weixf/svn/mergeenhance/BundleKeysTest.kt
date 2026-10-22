@@ -61,14 +61,31 @@ class BundleKeysTest {
 
     @Test
     fun `tab keys exist and are non blank in both bundles`() {
-        // 常驻 Enhance Merge 标签页（第六轮唯一新增）的 key 必须有文案
+        // 常驻 Enhance Merge 标签页（第七轮：工作副本信息块 + Merge From…）的 key 必须有文案
         for (key in listOf(
             "tab.name.enhance.merge",
-            "tab.select.root",
-            "tab.select.branch",
-            "tab.change.branch",
             "tab.refresh.roots",
-            "tab.empty.hint",
+            "wc.merge.from",
+            "wc.cleanup",
+            "wc.no.working.copies",
+            "wc.label.url",
+            "wc.label.format",
+            "wc.label.depth",
+            "wc.label.working.copy.root",
+        )) {
+            assertNotNull(base.getProperty(key), "英文基包缺少 key: $key")
+            assertNotNull(zhCn.getProperty(key), "中文包缺少 key: $key")
+        }
+    }
+
+    @Test
+    fun `merge variant dialog keys exist and are non blank in both bundles`() {
+        // 合并方式选择对话框（第七轮恢复，对齐原版 Select Merge Variant 步骤）
+        for (key in listOf(
+            "dialog.title.select.merge.variant",
+            "button.revision.select",
+            "button.cancel",
+            "variant.revision.select.explanation",
         )) {
             assertNotNull(base.getProperty(key), "英文基包缺少 key: $key")
             assertNotNull(zhCn.getProperty(key), "中文包缺少 key: $key")

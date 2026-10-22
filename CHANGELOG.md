@@ -6,8 +6,23 @@
 ## [Unreleased]
 
 ### 新增
-- 入口链接注入 SVN 的「Subversion Working Copies Information」面板（紧跟「Merge From…」下方），
-  项目关闭时自动摘除，不留残留。
+- **复刻原版 Cleanup（2026-10-22）**：工作副本信息块内新增 **Cleanup** 链接（仅 svn 1.7+ 工作副本显示，
+  对齐原版 `cleanupRow()`），动作复用原版**公开**的 `CleanupWorker(SvnVcs, List<VirtualFile>).execute()`，
+  不自实现 svn 清理逻辑；`Configure Branches` 因依赖 internal API 仍不复刻。
+- **第七轮走查修复（2026-10-22）**：
+  - 工作副本信息块改为**独立信息块 + GridBagLayout 左上对齐**（此前用 BoxLayout(Y_AXIS)，
+    子组件被拉伸到容器高度并在主轴居中，导致整块飘到面板中间）；
+  - **分支弹窗锚点**由「Merge From…」链接改为**整个信息块**——原版 CopiesPanel.mergeFrom 把
+    infoPanel 传给 SelectBranchPopup，其内部 showInCenterOf(myComponent) 使弹窗显示在信息块中心；
+  - **恢复**「Select Merge Variant」合并方式选择步骤（原版 QuickMerge.execute() → selectMergeVariant），
+    即分支选择后先弹该对话框再进入版本选择。
+- **复刻 Working Copies Information 面板（第七轮，2026-10-22）**：标签页改为**工作副本列表**
+  （`getAllWcInfos()` + 每行 path + URL），每行一个**加粗的「Merge From…」链接**（对齐原版 WC Info 面板）；
+  点「Merge From…」→ 原版分支弹窗 → **模态 `RevisionSelectDialog`**（复用 `RevisionSelectPanel`）→
+  `MergeExecutor`，后续步骤完全是 Enhance Merge（用户拍板：修订选择弹模态对话框、其余 WC Info 动作不复刻）。
+- **常驻「Enhance Merge」标签页（第六轮，2026-10-22）**：经官方 `changesViewContentEP` 在 VCS 工具窗
+  注册与「Subversion Working Copies Information」并列的标签页；纯公开 API、零反射、零轮询。
+  修订选择逻辑抽成可复用面板 `RevisionSelectPanel`。
 - **修订选择对话框「原版化 + 显式搜索框」（第五轮，2026-10-21）**：
   - 界面布局、行渲染（平台 `CommittedChangeListRenderer` + 行首复选框 + `ListMergeStatus` 图标）、
     工具栏（全选 / 全不选 / +100 / +500）、右栏变更树、`[Already merged]` 标记
@@ -25,6 +40,10 @@
 - 界面文案英文 + 简体中文，按 IDE 语言包状态自动切换。
 
 ### 变更
+- **删除反射注入入口（D1 ②，2026-10-22）**：移除 `WcInfoLinkInjector`（反射 `WorkingCopyInfoPanel.getInfo()`
+  + 2s 定时器扫组件树注入链接）及其整条模态链路（`EnhanceMergeAction` / `MergeVariantDialog` /
+  `RevisionSelectDialog` / `MergeFlow.start` / `MergeFlow.openRevisionSelect`），入口唯一化为官方标签页；
+  `plugin.xml` 摘除 `postStartupActivity`。本插件不再反射注入任何其它插件（满足上架规范）。
 - 项目/包名重命名：`SubversionEnhance` → `SvnMergeEnhance`，
   `com.svn.revisionselect` → `com.weixf.svn.mergeenhance`，
   插件名 `SVN Custom Merge` → `SVN Enhance Merge`，界面中文「自定义合并」→「增强合并」。

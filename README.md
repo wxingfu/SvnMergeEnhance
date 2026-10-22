@@ -31,21 +31,24 @@
 
 ## 功能特性
 
-### 入口：Working Copies Information 面板链接
+### 入口：VCS 工具窗「Enhance Merge」标签页（复刻 Working Copies Information 面板）
 
-- 挂在 IDEA 内置 SVN 插件的 **Subversion Working Copies Information** 标签页，紧跟「Merge From…」下方，与它并列；
-- 仅在项目启用 Subversion VCS 时可用；不注册任何菜单/右键项（避免与 IDE 自身菜单结构冲突）。
+- 经官方 `changesViewContentEP` 在 VCS 工具窗注册**常驻标签页**，与「Subversion Working Copies Information」并列；
+- 标签页列出项目全部**工作副本**（每个工作副本一个信息块：本地路径 / URL / Format / Depth / Working copy root），
+  块内提供 **Cleanup**（复用原版 `CleanupWorker`）与**加粗的「Merge From…」链接**（对齐原版 WC Info 面板）；
+- 仅在项目启用 Subversion VCS 时可见；不注册任何菜单/右键项、不反射注入任何其它插件（纯公开 API、零轮询）。
 
 ### 完整合并流程
 
 ```
-Working Copies Information 面板 → Enhance Merge… 链接
-  └─ ① SelectBranchPopup          复用原版分支选择弹窗（trunk / branches / Configure Branches…）
-       └─ ② MergeVariantDialog     合并方式（Revision Select / Cancel）
-            └─ ③ RevisionSelectDialog   修订列表（原版布局 + 关键词搜索过滤 + 分页 + 合并状态）   ← 本插件核心
-                 └─ ④ MergeExecutor     复用原版 SvnIntegrateChangesTask        ← 与原版一致
-                      1) LocalChangesPromptTask   本地改动与合并路径相交时的原版提示
-                      2) SvnIntegrateChangesTask  进度条 / 冲突解决 / 更新信息树
+Enhance Merge 标签页（工作副本信息块列表）
+  └─ 每块「Merge From…」链接
+       └─ ① SelectBranchPopup          复用原版分支选择弹窗（trunk / branches / Configure Branches…）
+            └─ ② Select Merge Variant    合并方式（Revision Select / Cancel），对齐原版步骤
+                 └─ ③ RevisionSelectDialog   模态修订选择（原版布局 + 关键词搜索过滤 + 分页 + 合并状态）   ← 本插件核心
+                      └─ ④ MergeExecutor     复用原版 SvnIntegrateChangesTask        ← 与原版一致
+                           1) LocalChangesPromptTask   本地改动与合并路径相交时的原版提示
+                           2) SvnIntegrateChangesTask  进度条 / 冲突解决 / 更新信息树
 ```
 
 ### 修订选择界面（核心增强）
@@ -194,19 +197,20 @@ SubversionEnhance/
 ├── scripts/
 │   ├── verify-plugin.ps1                # Windows 回归验证（切版本启沙箱 + 扫插件异常日志）
 │   └── verify-plugin.sh                 # Unix 版（同一逻辑）
-├── src/main/kotlin/com/svn/revisionselect/
-│   ├── EnhanceMergeAction.kt             # 流程入口（普通类，非 AnAction；由注入链接直接调用）
+├── src/main/kotlin/com/weixf/svn/mergeenhance/
 │   ├── EnhanceMergeBundle.kt             # 语言包感知的文案 bundle（英文基包 / _zh_CN）
-│   ├── flow/MergeFlow.kt                # 全流程编排：分支弹窗 → 方式确认 → 版本选择 → 合并
+│   ├── EnhanceMergeStartup.kt            # 启动期 i18n 日志（verify 就绪信号）
+│   ├── flow/MergeFlow.kt                # 流程编排：分支弹窗（SelectBranchPopup）→ URL 换算 → 模态修订选择
 │   ├── log/LogPageLoader.kt             # 修订日志分页加载（游标单通道 + 世代号防串）
 │   ├── log/LogFilter.kt                 # 过滤条件模型（关键词 + 全字段 + 空格 AND + 大小写不敏感）
 │   ├── merge/MergeExecutor.kt           # 合并执行（LocalChangesPromptTask + SvnIntegrateChangesTask）
 │   ├── settings/EnhanceMergeSettings.kt  # 设置状态（applicationService，持久化 svnEnhanceMerge.xml）
 │   ├── settings/EnhanceMergeConfigurable.kt # 设置页 UI（Version Control 分组）
-│   ├── ui/RevisionSelectDialog.kt       # 修订选择对话框（原版布局 / CommittedChangeListRenderer / 分页 / 合并状态）
-│   ├── ui/RevisionSearchField.kt        # 工具栏上方显式搜索框（防抖 / ✕ / Esc / 计数标签）
-│   ├── ui/MergeVariantDialog.kt         # 合并方式确认（Revision Select / Cancel）
-│   └── wcinfo/WcInfoLinkInjector.kt     # 向 Working Copies Information 面板注入 Enhance Merge 链接
+│   ├── tab/EnhanceMergeTabContent.kt    # 标签页 ChangesViewContentProvider + 可见性 + 标签名
+│   ├── tab/EnhanceMergePanel.kt         # 标签页主体（工作副本列表 + Merge From… 链接）
+│   ├── ui/RevisionSelectPanel.kt        # 修订选择面板（原版布局 / CommittedChangeListRenderer / 分页 / 合并状态）
+│   ├── ui/RevisionSelectDialog.kt       # 修订选择模态对话框（DialogWrapper 薄包装，委托 RevisionSelectPanel）
+│   └── ui/RevisionSearchField.kt        # 工具栏上方显式搜索框（防抖 / ✕ / Esc / 计数标签）
 ├── src/main/resources/
 │   ├── META-INF/plugin.xml              # 插件描述（vendor / change-notes / depends / EP 注册）
 │   ├── messages/EnhanceMergeBundle*.properties  # 界面文案（en / zh_CN）

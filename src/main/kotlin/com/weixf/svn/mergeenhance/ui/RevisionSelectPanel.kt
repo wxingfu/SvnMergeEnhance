@@ -70,17 +70,21 @@ import javax.swing.table.TableCellRenderer
  *
  * ## 为什么是面板（而非对话框）
  *
- * 第六轮把「修订选择」做成 VCS 工具窗里的**常驻标签页**（`EnhanceMergePanel` 宿主本面板）。
- * 早期曾短暂以 `RevisionSelectDialog`（DialogWrapper 薄包装）复用本面板作为模态入口，
- * 但该入口随 D1 ②（2026-10-22）连同反射注入链接一并删除，现**唯一宿主 = 常驻标签页**。
- * 本面板不含任何 DialogWrapper 专属职责（标题 / OK 按钮 / `getDimensionServiceKey`）。
+ * 第六轮把「修订选择」从模态对话框里**抽成可复用面板**，使同一份实现既能被对话框承载、
+ * 也能被常驻视图承载（避免复制粘贴约 800 行逻辑）。
+ *
+ * **当前宿主（第七轮，2026-10-22 定稿）= 模态 `RevisionSelectDialog`**：
+ * 标签页的「Merge From…」走 `MergeFlow.selectBranch → MergeFlow.openRevisionSelect`，
+ * 最终弹出模态修订选择对话框（对齐原版 Merge From 体验，用户拍板）。
+ * 本面板不含任何 DialogWrapper 专属职责（标题 / OK 按钮 / `getDimensionServiceKey`）——
+ * 那些由宿主承担。
  *
  * ## 生命周期
  *
  * - 本面板实现 [Disposable]，在 init 里 `Disposer.register(parentDisposable, this)`；
- *   所有子资源（搜索框防抖 Alarm、快捷键注册）直接注册到 `this`，随宿主（标签页）释放。
- * - 合并触发：本面板**不负责合并**。宿主（标签页在 `Merge Selected` 点击时读取 `selectedChangeLists()`）
- *   负责调 `MergeExecutor`。面板只通过 [onSelectionChanged] 回传「是否有勾选」给宿主驱动合并按钮可用态。
+ *   所有子资源（搜索框防抖 Alarm、快捷键注册）直接注册到 `this`，随宿主释放。
+ * - 合并触发：本面板**不负责合并**。宿主在关闭后读取 `selectedChangeLists()` 并调 `MergeExecutor`。
+ *   面板只通过 [onSelectionChanged] 回传「是否有勾选」，供宿主驱动其确认按钮的可用态。
  * - `CommittedChangesBrowser` 在 2022.1 是 `JPanel`（非 `Disposable`、无 `dispose()`，javap 实证），
  *   因此**不显式释放**，仅随面板组件树销毁。
  *

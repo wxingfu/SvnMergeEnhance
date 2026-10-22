@@ -115,8 +115,8 @@ Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.<
           - 不设 isInCommitToolWindow：与 WC Info 标签一致，出现在同一个工具窗；
           - 标签名由 DisplayNameSupplier 本地化（EnhanceMergeBundle 语言包感知），
             EP 上刻意不写 displayName 字面量（避免绕过本插件的语言判定）。
-          - 旧的反射注入入口（WcInfoLinkInjector）已按 D1 ② 删除，
-            本插件不再反射注入任何其它插件，也不再注册任何 <action>。
+          - 旧的反射注入入口（WcInfoLinkInjector）已按 D1 ② 删除，本插件不再反射注入任何其它插件，
+            也不再注册任何 <action>。
         -->
         <changesViewContent
             tabName="Enhance Merge"
