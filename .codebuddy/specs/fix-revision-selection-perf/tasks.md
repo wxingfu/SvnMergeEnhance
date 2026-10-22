@@ -69,3 +69,12 @@
   `verifyOnIde 2022.1` → **PASS（0 issues）**；`runPluginVerifier` IC-221 + IC-262 → **均 Compatible**。
 - 遗留：`collectChanges` 移到后台线程（无官方线程安全承诺，登记为版本敏感点）；
   `mergeChecker` 跨 IDE 版本无兼容承诺，升级基线时需实测。
+
+## T9 清单污染根因修复（第九轮）
+
+- [x] T9.1 定位根因：原版 getCommittedChangesWithMergedRevisons（includeMergedRevisions=true）带入合并源分支副本
+- [x] T9.2 LogPageLoader 改用 getCommittedChanges（不含合并修订、不走缓存、游标语义一致）
+- [x] T9.3 渲染器恢复「无状态图标 → 回落刷新中图标」（每行都有状态图标）
+- [x] T9.4 合并状态计算任务不再被后续「+N」取消
+- [x] T9.5 LogPageLoaderTest 回归看守（断言不调用含合并修订的接口）
+- [x] T9.6 文档同步：CHANGELOG / spec R9 / plan §7 / README

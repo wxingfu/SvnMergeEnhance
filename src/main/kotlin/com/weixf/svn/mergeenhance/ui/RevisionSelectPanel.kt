@@ -226,13 +226,20 @@ class RevisionSelectPanel(
     private val mergeStatusTask = AtomicReference<Future<*>?>(null)
 
     /**
-     * 启动一个后台任务并登记到 [ref]（同一时刻只保留最新一个；启动新任务会中断旧的）。
+     * 启动一个后台任务并登记到 [ref]（同一时刻只保留最新一个）。
      *
-     * 中断旧任务的意义：连续敲搜索词时，前几轮全量过滤没必要跑完（它们的 结果也会被
-     * `filterToken` 丢弃，纯属浪费 CPU）。
+     * @param cancelPrevious 是否中断上一个同类任务。
+     *   - 过滤任务：**要**中断（连续敲搜索词时，前几轮全量过滤的结果本就会被 `filterToken` 丢弃）；
+     *   - 合并状态计算：**不**中断（它算的是「已加载的那些修订」的状态，
+     *     中断会让**先加载的那批修订永远拿不到状态图标**——整片行首无图标，
+     *     看起来就像「版本缺失」）。多个任务并发时由 [mergeCheckerLock] 串行化，安全。
      */
-    private fun launchTask(ref: AtomicReference<Future<*>?>, block: () -> Unit) {
-        ref.getAndSet(null)?.cancel(true)
+    private fun launchTask(
+        ref: AtomicReference<Future<*>?>,
+        cancelPrevious: Boolean = true,
+        block: () -> Unit,
+    ) {
+        if (cancelPrevious) ref.getAndSet(null)?.cancel(true)
         val future = ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 block()
@@ -667,13 +674,11 @@ class RevisionSelectPanel(
                 if (!settings.computeMergeStatus) {
                     null
                 } else {
-                    val status = mergeStatusMap[list.number]
-                    when {
-                        // 尚未算出状态 → 显示「刷新中」
-                        status == null -> ListMergeStatus.REFRESHING.icon
-                        // 已算出但无状态（如计算失败 → COMMON）→ 不显示图标
-                        else -> status.icon
-                    }
+                    // 原版语义（与 main 版一致）：无记录 → 「刷新中」图标；
+                    // 状态本身无图标（如 ALIEN）→ 同样回落「刷新中」，
+                    // 保证**每一行都有状态图标**（第八轮曾把 ALIEN 渲染成「无图标」，
+                    // 整行看不出是「外来修订 / 状态未知」，用户会以为版本缺失）。
+                    mergeStatusMap[list.number]?.icon ?: ListMergeStatus.REFRESHING.icon
                 }
             }),
         )
@@ -716,7 +721,7 @@ class RevisionSelectPanel(
     private fun refreshMergeStatus(lists: List<SvnChangeList>) {
         if (lists.isEmpty()) return
         if (isDisposed || context.project.isDisposed) return
-        launchTask(mergeStatusTask) {
+        launchTask(mergeStatusTask, cancelPrevious = false) {
             val prepared = synchronized(mergeCheckerLock) {
                 if (mergeCheckerPrepared) {
                     true

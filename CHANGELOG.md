@@ -94,6 +94,18 @@
   - 加载器 `LogPageLoader` 简化为**单通道游标分页**（删除按日期的服务端查询模式），并引入"世代号"机制：过滤条件变化时旧的在飞加载任务立即作废、连一次请求都不发，杜绝旧条件数据串进新缓冲。
 
 ### 修复
+- **【修复】版本选择清单混入「合并源分支的修订副本」（第九轮，2026-10-22）——**原版自身缺陷**，本插件不照抄：
+  - **根因**：取数走 `MergeCalculatorTask.loadChangeLists` → `getCommittedChangesWithMergedRevisons`
+    （includeMergedRevisions=**true**），经 `SvnMergeSourceTracker` + `MergeSourceHierarchyBuilder`
+    把**合并源分支**的修订也塞进清单——即「同一个需求在别的分支上的副本」（路径相对源分支、
+    提交说明与目标分支上那条重复）。这些副本①mergeinfo 检查一律 NOT_EXISTS → 状态 ALIEN（**图标为 null**）
+    → 列表里出现「行首没有状态图标」的条目；②在目标上并不存在 → **合并不进去**（原版照样让勾选）
+    → 用户看到「选了这个版本，合并后什么都没发生」（版本缺失）。
+  - **修法**：改用同一 provider 的 `getCommittedChanges`（内部 includeMergedRevisions=**false**，
+    且直连实现**不走缓存**、实时查仓库），游标（CHANGE_BEFORE）语义与原版完全一致。
+  - **附带**：①渲染器恢复「无状态图标回落」（第八轮把 ALIEN 渲染成无图标，整行看不出状态）；
+    ②合并状态计算不再被后续「+N」取消（否则先加载的那批修订永远拿不到状态图标）。
+  - **回归看守**：LogPageLoaderTest 断言加载器绝不再调用 getCommittedChangesWithMergedRevisons。
 - **【回归】版本选择界面「版本缺失」（第八轮引入，2026-10-22 修复）**：第八轮把「批内同修订号」当重复项去重
   （去重集合在循环内回填），但 **SVN 的「合并修订」在日志里会按路径展开成同修订号的多条**
   （svn4idea 的 MergeSourceHierarchyBuilder + SvnMergeSourceTracker）——那些是**不同条目**，删掉就是丢数据：

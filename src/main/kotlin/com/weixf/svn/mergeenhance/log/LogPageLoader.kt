@@ -1,9 +1,10 @@
 package com.weixf.svn.mergeenhance.log
 
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.vcs.versionBrowser.ChangeBrowserSettings
 import org.jetbrains.annotations.VisibleForTesting
 import org.jetbrains.idea.svn.history.SvnChangeList
-import org.jetbrains.idea.svn.integrate.MergeCalculatorTask
+import org.jetbrains.idea.svn.history.SvnRepositoryLocation
 import org.jetbrains.idea.svn.integrate.MergeContext
 
 /**
@@ -16,6 +17,19 @@ import org.jetbrains.idea.svn.integrate.MergeContext
  * `m_limit = NumberOfLogs + 1`）。**日期区间与搜索词都不参与查询**——
  * 前者是纯客户端过滤（与 TSVN 的 `m_tFrom`/`m_tTo` 一致），
  * 后者由对话框在内存全集上过滤。
+ *
+ * ## ⚠️ 只取「源分支自身」的修订（第九轮修复，**不照抄原版**）
+ *
+ * 原版合并对话框走 `MergeCalculatorTask.loadChangeLists` →
+ * `SvnCommittedChangesProvider.getCommittedChangesWithMergedRevisons`
+ * （内部 `includeMergedRevisions = true`），会把**合并源分支**的修订也塞进清单
+ * （「同一个需求在别的分支上的副本」，路径相对源分支）。
+ * 这些副本在目标上并不存在 → 合并不进去，且 mergeinfo 检查一律 `NOT_EXISTS`
+ * → 状态图标为空 → 用户看到「版本缺失 / 行首无图标」。**这是原版自身的缺陷。**
+ *
+ * 本加载器改用同一 provider 的 `getCommittedChanges(...)`
+ * （`includeMergedRevisions = false`，且直连实现**不走缓存**、实时查仓库），
+ * 游标语义与原版完全一致。详见 [loadOwnBranchRevisions]。
  *
  * 早期版本存在「模式 A（有日期）→ `limit=0` 一次拉完整个日期区间」的第二条通道，
  * 后果是：同一对话框里勾/不勾日期区间会得到**不同的结果集**（前者不带 `-g`、带 peg），
@@ -122,8 +136,7 @@ class LogPageLoader(
             // 取消点：抛 ProcessCanceledException → 平台的 Task 走 onCancel/onThrowable，不再写回数据
             indicator?.checkCanceled()
             batches++
-            val result = cursorSource?.invoke(cursor, pageSize)
-                ?: MergeCalculatorTask.loadChangeLists(context, cursor, pageSize).let { it.first to it.second }
+            val result = cursorSource?.invoke(cursor, pageSize) ?: loadOwnBranchRevisions(cursor, pageSize)
             val page = result.first
             if (page.isEmpty()) {
                 allLoaded = true
@@ -134,6 +147,43 @@ class LogPageLoader(
             raw.addAll(page)
         }
         return raw
+    }
+
+    /**
+     * 取「**源分支自身**」的修订（**不含合并修订 / 外来副本**，且**不走缓存**）。
+     *
+     * ## 为什么不用原版的 `MergeCalculatorTask.loadChangeLists`
+     *
+     * 原版走 `SvnCommittedChangesProvider.getCommittedChangesWithMergedRevisons`
+     * （内部 `includeMergedRevisions = true`）：它经 `SvnMergeSourceTracker` +
+     * `MergeSourceHierarchyBuilder` 把**合并源分支**的修订也塞进清单——即
+     * 「同一个需求在别的分支上的副本」（路径相对源分支，提交说明与目标分支上的那条重复）。
+     *
+     * 这些副本是原版的**已知缺陷**：
+     * - 相对目标路径做 mergeinfo 检查一律 `NOT_EXISTS` → 状态 `ALIEN`（**图标为 null**），
+     *   列表里出现「行首没有状态图标」的条目；
+     * - 它们在目标上并不存在 → **合并不进去**（原版照样让用户勾选），
+     *   表现为「选了这个版本，合并后却什么都没发生」（版本缺失）。
+     *
+     * 这里改用同一 provider 的 `getCommittedChanges(...)`：其内部
+     * `getCommittedChangesImpl(..., includeMergedRevisions = false, ...)`，
+     * **只返回源分支自身的修订**，并**直连实现不走缓存**（实时查仓库），
+     * 游标（`CHANGE_BEFORE`）语义与原版完全一致。
+     *
+     * @param cursor 分页游标（`> 0` 时作为「该修订之前」的过滤条件）；`-1` = 从 HEAD 开始。
+     * @param size 本次最多取多少条。
+     * @return 取到的修订 + 「是否已取完」判定（多取一条判断）。
+     */
+    private fun loadOwnBranchRevisions(cursor: Long, size: Int): Pair<List<SvnChangeList>, Boolean> {
+        val settings = ChangeBrowserSettings()
+        if (cursor > 0) {
+            settings.CHANGE_BEFORE = cursor.toString()
+            settings.USE_CHANGE_BEFORE_FILTER = true
+        }
+        val provider = context.vcs.committedChangesProvider
+        // 多取一条用于判定「是否还有更多」（与原版 loadChangeLists 的判定方式一致）
+        val fetched = provider.getCommittedChanges(settings, SvnRepositoryLocation(context.sourceUrl), size + 1)
+        return fetched.take(size) to (fetched.size <= size)
     }
 
     /**

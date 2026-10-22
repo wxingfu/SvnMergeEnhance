@@ -78,3 +78,42 @@
   线程安全承诺**——已在 `RevisionSelectPanel` 的 KDoc 中登记为「版本敏感点」。
 - `mergeChecker`（svn4idea）本身无兼容承诺，跨 IDE 版本升级基线时需实测（本项目有
   `scripts/verify-plugin.ps1` 回归脚本兜底）。
+
+---
+
+## 7. 第九轮：修订清单被「合并源分支的副本」污染（原版自身缺陷，**不照抄**）
+
+### 7.1 现象
+
+版本选择列表里出现**行首没有状态图标**的条目（既非 +（未合并）也非 ?（未知/外来）），
+用户判定为「版本缺失」。截图可见列表由**两段递减序列**交错组成：
+一段带 ?（#29838、#29818 … #13175），一段**无图标**（#28638、#28611、#28544 … #13487）；
+两段的提交说明里的【需求编号】互相重复（如 #7763 同时出现在两段）→ **同一需求在不同分支上的副本**。
+
+### 7.2 根因（源码实证）
+
+1. 取数：`MergeCalculatorTask.loadChangeLists` → `SvnCommittedChangesProvider.getCommittedChangesWithMergedRevisons`
+   （内部 `includeMergedRevisions = true`）→ 经 `SvnMergeSourceTracker` + `MergeSourceHierarchyBuilder`
+   把**合并源分支**的修订一并产出。
+2. 状态：这些副本的路径相对**源分支**，相对目标路径做 mergeinfo 检查
+   （`OneShotMergeInfoHelper.checkList`）一律 `NOT_EXISTS` → `ListMergeStatus.ALIEN`
+   而 svn4idea 的 `ALIEN` **图标为 null**（`COMMON(SvnIcons.Common) / MERGED(Integrated) / NOT_MERGED(Notintegrated) / ALIEN(null) / REFRESHING(Unknown)`）
+   → **行首无图标**。
+3. 语义：它们在目标分支上并不存在 → **合并不进去**（原版照样让用户勾选）→ 选了却什么都没发生。
+
+### 7.3 修法（不照抄原版）
+
+- 加载器改用同一 provider 的 `getCommittedChanges`：内部 `includeMergedRevisions = false`，
+  **只返回源分支自身的修订**；且它**直连实现不走缓存**（实时查仓库），游标（`CHANGE_BEFORE`）语义与原版一致。
+- 渲染器：状态无图标时回落「刷新中」图标 → **每行都有状态图标**（第八轮曾把 ALIEN 渲染成无图标）。
+- 合并状态计算任务不再被后续「+N」取消 → 先加载那批修订不会永远缺状态图标。
+- 回归看守：`LogPageLoaderTest` 断言加载器不调用 `getCommittedChangesWithMergedRevisons`。
+
+### 7.4 API 跨版本核实（221 / 262 均实证）
+
+| API | 2022.1 | 2026.2.3 |
+|---|---|---|
+| `SvnCommittedChangesProvider.getCommittedChanges(ChangeBrowserSettings, RepositoryLocation, int)` | public ✓ | public ✓ |
+| `ChangeBrowserSettings.CHANGE_BEFORE / USE_CHANGE_BEFORE_FILTER` | public 字段 ✓ | public 字段 ✓ |
+| `SvnRepositoryLocation(Url)` | public ✓ | public ✓ |
+| `SvnVcs.getCommittedChangesProvider()` | `CommittedChangesProvider<SvnChangeList, ChangeBrowserSettings>` ✓ | 同 ✓ |

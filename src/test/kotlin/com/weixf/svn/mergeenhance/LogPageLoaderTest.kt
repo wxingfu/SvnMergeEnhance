@@ -6,7 +6,11 @@ import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
+import org.jetbrains.idea.svn.SvnVcs
+import org.jetbrains.idea.svn.api.Url
 import org.jetbrains.idea.svn.history.SvnChangeList
+import org.jetbrains.idea.svn.history.SvnCommittedChangesProvider
 import org.jetbrains.idea.svn.integrate.MergeContext
 import java.util.Date
 import kotlin.test.Test
@@ -256,5 +260,35 @@ class LogPageLoaderTest {
         }
         // 只跑了第一批就被取消（不会继续扫仓库）
         assertEquals(1, calls)
+    }
+
+    // -------------------------------------------------- 只取源分支自身
+
+    /**
+     * 回归看守（第九轮）：加载器**绝不能**再走 `getCommittedChangesWithMergedRevisons`。
+     *
+     * 该接口（`includeMergedRevisions = true`）会把**合并源分支**的修订也带进清单——
+     * 即「同一个需求在别的分支上的副本」（路径相对源分支）。这些副本：
+     * - 在目标上并不存在 → **合并不进去**（用户勾了却什么都没发生 = 版本缺失）；
+     * - mergeinfo 检查一律 `NOT_EXISTS` → 状态 `ALIEN`（**图标为 null**）→ 行首无状态图标。
+     *
+     * 原版合并对话框正是这个缺陷的受害者；本插件改用 `getCommittedChanges`
+     * （`includeMergedRevisions = false`，且不走缓存）。
+     */
+    @Test
+    fun `loader never asks the provider for merged revisions`() {
+        val provider = mockk<SvnCommittedChangesProvider>(relaxed = true)
+        val vcs = mockk<SvnVcs>(relaxed = true)
+        every { vcs.committedChangesProvider } returns provider
+        val ctx = mockk<MergeContext>(relaxed = true)
+        every { ctx.vcs } returns vcs
+        every { ctx.sourceUrl } returns mockk<Url>(relaxed = true)
+        every { provider.getCommittedChanges(any(), any(), any()) } returns emptyList()
+
+        val loader = LogPageLoader(ctx)
+        loader.loadNextPageRaw(10, loader.snapshot())
+
+        verify(exactly = 0) { provider.getCommittedChangesWithMergedRevisons(any(), any(), any(), any()) }
+        verify(atLeast = 1) { provider.getCommittedChanges(any(), any(), any()) }
     }
 }

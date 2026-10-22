@@ -66,3 +66,13 @@
 - 不改 `QuantitySelection`（svn4idea 公开类）的语义；
 - 不改 `RevisionSelectPanel` 的搜索框、分页、右栏视图结构；
 - 不为 `mergeChecker` / `CommittedChangesTreeBrowser` 的跨版本行为做兜底（登记为版本敏感点即可）。
+
+## R9 修订清单只含「源分支自身」的修订（第九轮 —— **不照抄原版**）
+
+- **R9.1** 加载器**不得**使用 getCommittedChangesWithMergedRevisons（includeMergedRevisions=true）：
+  它会带入**合并源分支**的修订副本（路径相对源分支），这些副本在目标上不存在 → 合并不进去，
+  且状态恒为 ALIEN（图标为 null）→ 表现为「版本缺失 / 行首无图标」。**这是原版自身的缺陷。**
+- **R9.2** 改用 getCommittedChanges（includeMergedRevisions=false、**不走缓存**、游标语义不变）。
+- **R9.3** 渲染器：状态无图标时回落「刷新中」图标 —— **每一行都必须有状态图标**。
+- **R9.4** 合并状态计算任务不得被后续「+N」取消（否则先加载那批永远没有状态图标）。
+- **R9.5** 回归看守：单测断言加载器不会调用 getCommittedChangesWithMergedRevisons。
