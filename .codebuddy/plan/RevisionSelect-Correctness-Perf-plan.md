@@ -28,7 +28,7 @@
 | M4 | 释放 | 面板 dispose 不取消在飞后台任务；进度条「取消」实际不中止（loader 循环不感知 indicator） | dispose 中断过滤/合并状态任务与右栏 Alarm；`LogPageLoader.loadNextPageRaw` 增加**取消点**（每批之间 `checkCanceled`） |
 | m1 | 杂项 | `reloadToken` 恒 0、守卫恒真（死代码，误导读者以为有作废机制） | **删除**该字段与四处比较（真实作废靠世代号 + `loadIndicator`） |
 | m2 | 杂项 | `loadingMore` 可能永久卡 `true` → 「+N」按钮永久消失 | `onFinished` 里**无条件复位**（early-return 之前） |
-| m3 | 杂项 | `loadedAll` 可能写入重复修订号（`existing` 集合循环内不回填） | 去重集合在循环内回填 |
+| m3 | 杂项 | 原判断「`loadedAll` 可能写入重复修订号」**有误**：SVN 的「合并修订」按路径展开成同修订号的多条，**是不同条目，不能去重**（原版也保留批内重复） | **不批内去重**；语义抽到 `RevisionAccumulator` 并加单测 |
 | m6 | 杂项 | 合并状态计算失败的行永远显示「刷新中」；`mergeStatusMap` 只增不清 | 失败落 `ListMergeStatus.COMMON`；渲染器区分「无记录(=计算中)」与「COMMON(=无图标)」；dispose 时清空缓存 |
 | m7 | 杂项 | 达到 2 万条上限后「+N」静默失效（点了没反应） | 达上限时动作**置灰**并给出说明性 tooltip（新增文案 `status.load.limit.reached`） |
 

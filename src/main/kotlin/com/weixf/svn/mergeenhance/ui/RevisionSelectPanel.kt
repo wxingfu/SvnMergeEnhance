@@ -433,22 +433,9 @@ class RevisionSelectPanel(
 
     /** 一批新数据到手后的统一处理：并入全集 → 重过滤 → 重绘。 */
     private fun onDataLoaded(added: List<SvnChangeList>) {
-        if (added.isNotEmpty()) {
-            // 去重：同批内可能出现重复修订号，必须在循环内回填 existing，否则同一修订会进全集两次
-            val existing = HashSet<Long>(loadedAll.size * 2)
-            loadedAll.forEach { existing.add(it.number) }
-            val fresh = ArrayList<SvnChangeList>(added.size)
-            for (item in added) {
-                if (existing.add(item.number)) fresh.add(item)
-            }
-            if (fresh.isNotEmpty()) {
-                // 一次性构造新列表并原子替换：避免 CopyOnWriteArrayList 逐条 add 的 O(n²) 拷贝
-                val merged = ArrayList<SvnChangeList>(loadedAll.size + fresh.size)
-                merged.addAll(loadedAll)
-                merged.addAll(fresh)
-                loadedAll = merged
-            }
-        }
+        // ⚠️ 去重语义见 [RevisionAccumulator]：只与「此前已加载的集合」去重，
+        // **必须保留批内重复项**（SVN 的合并修订按路径展开成同修订号的多条，是不同条目）。
+        loadedAll = RevisionAccumulator.merge(loadedAll, added)
         applyFilterToModel()
         refreshMergeStatus(added)
         refreshList()

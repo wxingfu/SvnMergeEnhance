@@ -21,7 +21,7 @@
 ## T3 全集累积（R4 / R6.2 / R6.3）
 
 - [x] T3.1 `loadedAll` 改不可变列表 + `@Volatile` 原子替换（消除 COW 逐条 add 的 O(n²)）
-- [x] T3.2 去重集合在循环内回填（同批重复修订号不进两次）
+- [x] T3.2 去重只比对「此前已加载的集合」，**保留批内重复项**（合并修订按路径展开）
 - [x] T3.3 `loadingMore` 在 `onFinished` 无条件复位
 - [x] T3.4 合并状态失败落 `ListMergeStatus.COMMON`；渲染器区分「无记录=计算中」与「COMMON=无图标」
 - [x] T3.5 dispose 时清空 `mergeStatusMap`
@@ -56,6 +56,8 @@
 - [x] T8.1 `CHANGELOG.md` 新增「第八轮」条目
 - [x] T8.2 `README.md` 说明勾选与过滤的关系
 - [x] T8.3 新增 `plan/RevisionSelect-Correctness-Perf-plan.md` + 本 spec 三件套
+- [x] T8.4 **回归修复**：第八轮曾把「批内同修订号」当重复删掉，导致有合并修订的分支上表格少行
+  （真机验证到的「版本缺失」）。已恢复原版去重语义（只跨页去重），语义抽到 RevisionAccumulator 并加 4 个单测。
 
 ---
 
