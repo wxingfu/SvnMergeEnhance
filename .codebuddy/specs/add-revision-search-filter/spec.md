@@ -57,6 +57,11 @@
 - **R5.2** `+N` 行为对齐原版：加载中隐藏 +500、禁用 +100/+500；完成后恢复并追加数据；
   `loader.allLoaded` 时两个 +N **隐藏**（非置灰）。
 - **R5.3** 「全选/全不选」语义不变（`QuantitySelection.setAll/clearAll`）。
+- **R5.4（2026-10-30 补充）** `+N` 两个按钮的**渲染方式必须与原版一致**：
+  原版 `MoreAction` 实现 `CustomComponentAction`，工具栏里放的是**真实 Swing 按钮 `JButton`**
+  （带边框的立体按钮，文字 `Load +100` / `Load +500`），**不是**平台默认的扁平 `ActionButton`；
+  加载中按钮位置显示灰色 `Loading...`（`CommonBundle.getLoadingTreeNodeText()`）。
+  实现见 `ui/RevisionSelectPanel.LoadMoreAction`（文案 key = `action.load.quantity`，`Load +{0}`）。
 
 ## R6 过滤反馈
 

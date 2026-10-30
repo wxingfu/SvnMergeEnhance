@@ -189,6 +189,21 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   `FormBuilder.addLineGap()`（用 `addVerticalGap(-1)` 代替）。
 - 其它已确认可用：`Alarm(ThreadToUse, Disposable)`、`CustomShortcutSet`、`DumbAwareAction`、
   `UIUtil.getErrorForeground/getContextHelpForeground`、`com.intellij.openapi.util.text.StringUtil`。
+- **禁用 `java.awt.BoxLayout`（本机编译基线 JDK 11 实测，2026-10-30）**：
+  编译基线 `D:/softwares/Java/jdk-11.0.32.1` 的 jimage 里**没有** `java.awt.BoxLayout`
+  （该构建把它挪成了 `javax.swing.BoxLayout`，`jimage list` 实测确认），
+  而 IDE 运行时 JBR 11 **只有** `java.awt.BoxLayout` —— 两端取交集为空：
+  写 `java.awt.BoxLayout` → 编译报 `Unresolved reference: BoxLayout`；
+  写 `javax.swing.BoxLayout` → 编译能过，但运行时 `NoClassDefFoundError`。
+  需要横向排列时用 `java.awt.FlowLayout`（两端都有，观感等价）。
+- **「+N」加载更多按钮必须走 `CustomComponentAction`（2026-10-30 定稿）**：
+  原版 svn4idea 的「Load +100 / Load +500」**不是**平台默认的 `ActionButton`（扁平文字按钮），
+  而是 `org.jetbrains.idea.svn.integrate.MoreAction` 用 `CustomComponentAction`
+  塞进工具栏的**真实 Swing 按钮**（`JButton`，带边框的立体按钮）。
+  本插件已复刻（`ui/RevisionSelectPanel.LoadMoreAction`），勿改回普通 action；
+  文案 key = `action.load.quantity`（`Load +{0}`，对齐原版 `SvnBundle` 的 `button.load.quantity`）。
+  ⚠️ 平台侧对 `CustomComponentAction` 的**可见性**由 `Presentation.isVisible` 决定，
+  但**回调时机不确定** → 视觉状态一律由本插件自己驱动（`syncState()`，EDT 调用），不依赖平台刷新。
 ## 依赖边界（硬约束）
 
 - **禁止引入 SVNKit** 或任何外部 Maven 坐标；所需类全部由 IntelliJ SDK 提供。
@@ -327,10 +342,10 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
 - **已删除**（D1 ② 入口唯一化）：`wcinfo/WcInfoLinkInjector`、`EnhanceMergeAction`
 
-单测（2026-10-22）：`LogFilterTest`(8) + `LogPageLoaderTest`(14) + `QuantitySelectionTest`(9) +
-`EnhanceMergeBundleTest`(3) + `BundleKeysTest`(5) + `EnhanceMergeSettingsTest`(4) +
-`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) = **54**（第九轮后）。
-（旧文档里的 12 / 39 / 53 / 55 / 60 / 63 均已落后，以 **54** 为准。）
+单测（2026-10-30）：`LogFilterTest`(8) + `LogPageLoaderTest`(14) + `QuantitySelectionTest`(9) +
+`EnhanceMergeBundleTest`(3) + `BundleKeysTest`(6) + `EnhanceMergeSettingsTest`(4) +
+`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) = **55**（第九轮 + 「+N」按钮复刻原版后）。
+（旧文档里的 12 / 39 / 53 / 54 / 55 / 60 / 63 均已落后，以 **55** 为准；README 的「测试」章节已同步。）
 
 ### 2026-10-21 原版化 + 显式搜索框（第五轮 · **已实施**）
 
@@ -367,7 +382,7 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 | 界面 | 顶部 TSVN 过滤栏 + 自绘行 + 底部状态栏 | 原版布局 + 平台行渲染；唯一新增 = 表格上方搜索框 |
 | 搜索 | 过滤栏（多字段 / 正则 / 日期 / 高亮）+ 表格隐式 speed search 双轨 | 单一显式搜索框（全字段 / 空格 AND / 大小写不敏感 / 无高亮） |
 | 日期区间 | 开关 + From/To 日历 | **已删除** |
-| 工具栏 | 全选 / 全不选 / Show All / Refresh / +100 / +500 | 全选 / 全不选 / +100 / +500（原版） |
+| 工具栏 | 全选 / 全不选 / Show All / Refresh / +100 / +500 | 全选 / 全不选 / **Load +100 / Load +500**（原版；后两者是 `CustomComponentAction` 里的真实 Swing 立体按钮，非平台扁平 `ActionButton`） |
 | +N 语义 | 加载中置灰 | 加载中两按钮隐藏（原版语义） |
 | 第三方依赖 | LGoodDatePicker（JitPack） | **零外部依赖**（zip 434KB → 103KB） |
 
@@ -652,6 +667,17 @@ TortoiseSVN 的 `LogDlg` 里，**搜索/过滤从不触发服务器请求**：`m
   BUILD SUCCESSFUL（Kotlin 编译零告警）、`verifyOnIde "-PideaVersion=2022.1"` → **PASS（0 issues）**。
   `runPluginVerifier` 本轮未重跑——改动全在插件自身代码内，未触碰 svn4idea API 调用面，
   下次兼容性回归时一并跑。）
-  `verify-plugin.sh`（Unix 版）本机无 bash **尚未实跑**，首次在 Linux/macOS 使用前请先人工执行一次确认。
+  （**2026-10-30「+N」按钮复刻原版后重跑**：`test` **55 用例 0 失败**；`buildPlugin` BUILD SUCCESSFUL
+  （zip 125,921 B，Kotlin 编译零告警）；`verifyOnIde "-PideaVersion=2022.1" "-PverifyTimeout=600" "-PverifyAutoClose=true"`
+  → **PASS**（沙箱日志出现 `EnhanceMerge i18n` 就绪行、插件相关 ERROR 为 0）；
+  `runPluginVerifier` 未重跑——本次只动插件自身 UI 代码，未触碰 svn4idea API 调用面。
+  ⚠️ **本次踩到的沙箱假故障（勿误判为插件缺陷）**：同一份代码连续两次 `verifyOnIde` 卡在
+  `ApplicationLoader.initApplication(ApplicationLoader.kt:189)` 直到 600s / 900s 超时，
+  jstack 显示主线程 park 在 `CompletableFuture.join`、各线程池空闲、**插件类不在栈上**、
+  `idea.log` 无 ERROR；用 `git stash` 做「改动前 / 改动后」A/B 对照：**改动前 1 分钟 PASS、
+  改动后 29 秒 PASS**，故判定为环境性卡顿（残留进程 / 沙箱状态），与本次改动无关。
+  排查顺序固定为：① 杀残留 `*idea-sandbox*` java 进程 → ② 看 `idea.log` 有无插件 ERROR
+  → ③ jstack 看栈上有没有本插件类 → ④ 必要时 `git stash` 做 A/B 对照。）
+
 - **PowerShell 调用 gradlew 的坑**：`-PideaVersion=2022.1` 这类含点号的参数必须加引号
   （`"-PideaVersion=2022.1"`），否则会被 PowerShell 拆成 `-PideaVersion=2022` + `.1`，报 `Task '.1' not found`。

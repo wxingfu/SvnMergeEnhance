@@ -6,6 +6,7 @@ import java.util.Properties
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
  * 文案包（`messages/EnhanceMergeBundle*.properties`）的**结构**回归测试。
@@ -90,6 +91,18 @@ class BundleKeysTest {
         )) {
             assertNotNull(base.getProperty(key), "英文基包缺少 key: $key")
             assertNotNull(zhCn.getProperty(key), "中文包缺少 key: $key")
+        }
+    }
+
+    @Test
+    fun `load more button text is parameterized in both bundles`() {
+        // 「+N」加载更多按钮（复刻原版 MoreAction：文案 "Load +{0}"，数量是占位符）
+        for (key in listOf("action.load.quantity")) {
+            val en = assertNotNull(base.getProperty(key), "英文基包缺少 key: $key")
+            val zh = assertNotNull(zhCn.getProperty(key), "中文包缺少 key: $key")
+            // 少了 {0} 就会渲染成字面量 "Load +{0}"（MessageFormat 只在有参数时才替换）
+            assertTrue(en.contains("{0}"), "英文文案缺少数量占位符: $en")
+            assertTrue(zh.contains("{0}"), "中文文案缺少数量占位符: $zh")
         }
     }
 }

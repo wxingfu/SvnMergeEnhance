@@ -53,14 +53,16 @@ Enhance Merge 标签页（工作副本信息块列表）
 
 ### 修订选择界面（核心增强）
 
-界面布局、行渲染、工具栏（全选 / 全不选 / +100 / +500）、右栏变更树均与原版 `ToBeMergedDialog` 一致；**唯一新增**是工具栏上方独立一行的关键词搜索框。
+界面布局、行渲染、工具栏（全选 / 全不选 / **Load +100 / Load +500**）、右栏变更树均与原版 `ToBeMergedDialog` 一致；**唯一新增**是工具栏上方独立一行的关键词搜索框。
+
+> 「+N」两个按钮与原版同款：走 `CustomComponentAction` 在工具栏里渲染**真实 Swing 按钮**（带边框的立体按钮，文字 `Load +100` / `Load +500`），而非平台默认的扁平文字按钮；加载中按钮位置显示 `Loading...`（原版语义）。
 
 | 能力 | 说明 |
 |---|---|
 | 关键词搜索过滤 | 工具栏上方显式搜索框；匹配范围 = **全字段**（提交说明 + 全部变更路径 + 作者 + 版本号 + 日期文本）；多关键词**空格分隔取且**，子串匹配、**大小写不敏感**；`Esc` / `✕` 清空恢复。同行显示「匹配 M / 已加载 N」 |
 | 清单内容 | **只含「源分支自身」的修订**（不含合并源分支的副本——原版会把它们也列进来，但它们在目标上不存在、合并不进去，行首还会缺状态图标） |
-| 过滤范围 | **只过滤已加载的修订**（纯客户端，零服务器请求）；命中不足时点「+100 / +500」加载更多，新加载数据同样按当前关键词过滤 |；**过滤不改变勾选与合并集合** |
-| 分页加载 | 首屏 + 「+100 / +500」实时向仓库翻页（游标分页，跟踪已加载全集的最早修订号，过滤后不跳段） |
+| 过滤范围 | **只过滤已加载的修订**（纯客户端，零服务器请求）；命中不足时点「Load +100 / Load +500」加载更多，新加载数据同样按当前关键词过滤 |；**过滤不改变勾选与合并集合** |
+| 分页加载 | 首屏 + 「Load +100 / Load +500」实时向仓库翻页（游标分页，跟踪已加载全集的最早修订号，过滤后不跳段） |
 | 合并状态 | 每行显示 已合并 ✔ / 外来修订（无图标）/ 计算中 图标；右栏对**已合并**文件追加 `[Already merged]` |
 | 变更文件 | 右侧 `CommittedChangesBrowser` 展示所选修订的变更路径，支持 `Ctrl+D` 查看差异 |
 | 勾选 | 复选框在行首最左，鼠标点击或 `Space` 键切换；全选 / 全不选；稀疏语义（全选后排除个别）跨翻页保留 |；**勾选以修订号为准、不受过滤影响**（过滤只是视图，合并集合不变）；有过滤时「全选」只选当前可见行 |
@@ -131,8 +133,8 @@ Enhance Merge 标签页（工作副本信息块列表）
 
 5. **④ 选择修订**：
    - 勾选需要合并的版本（鼠标点行首复选框，或选中行后按 `Space`）；
-   - 工具栏上方的**搜索框**输入关键词缩小范围：多关键词空格分隔取且，匹配提交说明 / 路径 / 作者 / 版本号 / 日期（大小写不敏感）；搜索只过滤**已加载**的修订，命中不足时点「+100 / +500」继续加载（不会自动请求服务器），新加载数据同样按当前关键词过滤；
-   - 「+100 / +500」继续向后翻页；
+   - 工具栏上方的**搜索框**输入关键词缩小范围：多关键词空格分隔取且，匹配提交说明 / 路径 / 作者 / 版本号 / 日期（大小写不敏感）；搜索只过滤**已加载**的修订，命中不足时点「Load +100 / Load +500」继续加载（不会自动请求服务器），新加载数据同样按当前关键词过滤；
+   - 「Load +100 / Load +500」继续向后翻页；
    - 选中行后 `Ctrl+D` 查看该修订差异。
 
 6. **⑤ 执行合并**：点击 `Merge Selected` →
@@ -169,9 +171,9 @@ Enhance Merge 标签页（工作副本信息块列表）
 
    | 环节 | 行为 |
    |---|---|
-   | 加载 | 游标分页（单通道）：首屏 + 「+100 / +500」，游标 = 已加载全集的最早修订号 |
-   | 过滤 | 纯客户端：只作用于已加载集合，**零服务器请求**；命中不足不自动请求，由用户显式「+100 / +500」加载更多 |
-   | 服务端入口 | 仅两个：**首屏**、**「+100 / +500」**（搜索词不改变服务端查询范围） |
+   | 加载 | 游标分页（单通道）：首屏 + 「Load +100 / Load +500」，游标 = 已加载全集的最早修订号 |
+   | 过滤 | 纯客户端：只作用于已加载集合，**零服务器请求**；命中不足不自动请求，由用户显式「Load +100 / Load +500」加载更多 |
+   | 服务端入口 | 仅两个：**首屏**、**「Load +100 / Load +500」**（搜索词不改变服务端查询范围） |
 
 2. **合并状态**（T8）后台线程批量调 `MergeChecker.checkList()`，映射 `MERGED→MERGED` / `NOT_EXISTS→ALIEN` / 其余→`REFRESHING`，每 10 条批量重绘一次；图标渲染在**复选框之后**（命中区 `[cell.x, cell.x+checkboxWidth]` 与视觉对齐）。右栏 `[Already merged]` 取 `getNotMergedPaths` 的补集。
 
@@ -220,10 +222,12 @@ SubversionEnhance/
 │   └── pluginIcon.svg / pluginIcon_dark.svg    # 插件图标 40×40（浅色 / 深色主题）
 └── src/test/kotlin/com/svn/revisionselect/
     ├── LogFilterTest.kt                 # 过滤语义 8 用例（空词 / 全字段 / AND / 大小写不敏感）
-    ├── LogPageLoaderTest.kt             # 游标单通道分页 12 用例（世代号 / 补批 / MAX_BATCHES / reopenIfExhausted）
+    ├── LogPageLoaderTest.kt             # 游标单通道分页 14 用例（世代号 / 补批 / MAX_BATCHES / reopenIfExhausted）
     ├── QuantitySelectionTest.kt         # 稀疏勾选 9 用例
+    ├── RevisionSelectionTest.kt         # 勾选集合语义 7 用例（以修订号为准 / 不受过滤影响）
+    ├── RevisionAccumulatorTest.kt       # 已加载全集累积 4 用例（跨页去重 / 批内重复全保留）
     ├── EnhanceMergeBundleTest.kt        # 文案 bundle 3 用例（基包 / _zh_CN / 缺键回退）
-    ├── BundleKeysTest.kt                # 文案 key 对齐 3 用例（中英一致 / 非空 / 搜索框 key）
+    ├── BundleKeysTest.kt                # 文案 key 对齐 6 用例（中英一致 / 非空 / 各功能 key / 「+N」文案占位符）
     └── EnhanceMergeSettingsTest.kt      # 设置持久化 4 用例（pageSize 夹取 / 旧配置兼容 / 开关往返）
 ```
 
@@ -276,7 +280,7 @@ SubversionEnhance/
 
 | 项 | 默认值 | 说明 |
 |---|---|---|
-| 每页版本数 | `100` | 首屏与每次「+100 / +500」的条数（10–500），对齐 TortoiseSVN 的 `NumberOfLogs` |
+| 每页版本数 | `100` | 首屏与每次「Load +100 / Load +500」的条数（10–500），对齐 TortoiseSVN 的 `NumberOfLogs` |
 | 计算已合并状态 | 开 | 为每行显示已合并/外来/计算中图标，并在变更文件列表标记 `[Already merged]`；关闭后不读取 `svn:mergeinfo` |
 
 设置持久化于应用级 `svnEnhanceMerge.xml`，重启 IDE 后仍生效。界面语言跟随 IDE
@@ -286,7 +290,7 @@ SubversionEnhance/
 
 ## 测试
 
-### 纯逻辑单元测试（39 用例，不连仓库）
+### 纯逻辑单元测试（55 用例，不连仓库）
 
 ```bash
 ./gradlew.bat test
@@ -295,11 +299,13 @@ SubversionEnhance/
 | 测试类 | 用例数 | 覆盖 |
 |---|---|---|
 | `LogFilterTest` | 8 | 空词不过滤、全字段命中（说明/作者/路径/版本号/日期）、多词 AND、大小写不敏感 |
-| `LogPageLoaderTest` | 12 | 游标单通道：推进 / 到底 / 整页保守判定 / 补批 / `MAX_BATCHES` 上限 / `reopenIfExhausted`；**世代号**：stale 世代号不发包、reset 后旧在飞任务作废 |
-| `EnhanceMergeBundleTest` | 3 | 文案 bundle：基包 / `_zh_CN` / 缺键回退 |
-| `BundleKeysTest` | 3 | 文案 key：中英包集合一致、取值非空、搜索框 key 存在 |
-| `EnhanceMergeSettingsTest` | 4 | 设置持久化：pageSize 夹取、旧配置（含已删字段）兼容、开关往返 |
+| `LogPageLoaderTest` | 14 | 游标单通道：推进 / 到底 / 整页保守判定 / 补批 / `MAX_BATCHES` 上限 / `reopenIfExhausted`；**世代号**：stale 世代号不发包、reset 后旧在飞任务作废 |
 | `QuantitySelectionTest` | 9 | 全不选起点的增删清、全选起点的排除与恢复、`areAllSelected()` 的原版语义（起点为全选时恒为 `true`，本插件 `selectedChangeLists()` 依赖该行为走排除集） |
+| `RevisionSelectionTest` | 7 | 勾选集合语义：以修订号为准、不受过滤视图影响、稀疏增删 |
+| `RevisionAccumulatorTest` | 4 | 已加载全集累积：跨页去重、**批内重复修订号全部保留**（SVN 合并修订按路径展开） |
+| `EnhanceMergeBundleTest` | 3 | 文案 bundle：基包 / `_zh_CN` / 缺键回退 |
+| `BundleKeysTest` | 6 | 文案 key：中英包集合一致、取值非空、搜索框 key、标签页 key、合并方式弹窗 key、**「+N」按钮文案含 `{0}` 占位符** |
+| `EnhanceMergeSettingsTest` | 4 | 设置持久化：pageSize 夹取、旧配置（含已删字段）兼容、开关往返 |
 
 > 测试通过 `cursorSource` 注入点喂假数据，不连仓库；
 > `SvnChangeList` / `MergeContext` 用 mockk 只 stub 需要的 getter。

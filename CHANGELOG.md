@@ -94,6 +94,20 @@
   - 加载器 `LogPageLoader` 简化为**单通道游标分页**（删除按日期的服务端查询模式），并引入"世代号"机制：过滤条件变化时旧的在飞加载任务立即作废、连一次请求都不发，杜绝旧条件数据串进新缓冲。
 
 ### 修复
+- **【修复】版本选择界面的「+100 / +500」按钮样式与原版 SVN 插件不一致（2026-10-30）**：
+  原版的「Load +100 / Load +500」**不是**平台默认的 `ActionButton`（扁平文字按钮），
+  而是经 `CustomComponentAction` 塞进工具栏的**真实 Swing 按钮**（`JButton`，带边框的立体按钮），
+  两者观感差别明显。改为复刻原版 `MoreAction`：
+  - 动作实现 `CustomComponentAction`，工具栏里渲染真实 `JButton`（margin 2px），
+    文案改用 `action.load.quantity=Load +{0}`（对齐原版 `SvnBundle` 的 `button.load.quantity`），
+    取代原先无前缀的 `+100` / `+500`；
+  - 加载中按钮隐藏、原地显示灰色 `Loading...`（原版 `MoreAction.setEnabled` 语义），
+    「+500」的动作同时整体从工具栏移除（原版 `MoreXAction.perform`），避免出现两个 `Loading...`；
+  - 已取完全部修订时整个动作从工具栏移除（原版 `setAllListsLoaded`）；
+  - 触达本插件自有的 2 万条上限时按钮保留但置灰、tooltip 说明原因（沿用原行为）。
+  - 注：容器布局由原版的 `java.awt.BoxLayout` 改为 `FlowLayout`——本机编译基线 JDK 11 的 jimage 里
+    **没有** `java.awt.BoxLayout`（该构建把它挪成了 `javax.swing.BoxLayout`），而 IDE 运行时 JBR 只有前者，
+    两端取交集为空，直接照抄原版会编译不过、改用 `javax.swing.BoxLayout` 又会运行时 `NoClassDefFoundError`。
 - **【修复】版本选择清单混入「合并源分支的修订副本」（第九轮，2026-10-22）——**原版自身缺陷**，本插件不照抄：
   - **根因**：取数走 `MergeCalculatorTask.loadChangeLists` → `getCommittedChangesWithMergedRevisons`
     （includeMergedRevisions=**true**），经 `SvnMergeSourceTracker` + `MergeSourceHierarchyBuilder`

@@ -1,11 +1,14 @@
 package com.weixf.svn.mergeenhance.ui
 
+import com.intellij.CommonBundle
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionToolbar
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.Presentation
+import com.intellij.openapi.actionSystem.ex.CustomComponentAction
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
@@ -51,6 +54,7 @@ import org.jetbrains.idea.svn.mergeinfo.MergeCheckResult
 import org.jetbrains.idea.svn.mergeinfo.OneShotMergeInfoHelper
 import java.awt.BorderLayout
 import java.awt.Component
+import java.awt.FlowLayout
 import java.awt.Rectangle
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
@@ -58,6 +62,7 @@ import java.awt.event.MouseEvent
 import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComponent
+import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTable
 import javax.swing.ListSelectionModel
@@ -251,29 +256,109 @@ class RevisionSelectPanel(
     }
 
     /** 动态「+N」动作。**必须在 `init` 之前声明**。 */
-    private val loadHundredAction = createLoadMoreAction("action.load.hundred", LOAD_MORE_SMALL)
+    private val loadHundredAction = LoadMoreAction(LOAD_MORE_SMALL, hideWhileLoading = false)
 
-    private val loadFiveHundredAction = createLoadMoreAction("action.load.fiveHundred", LOAD_MORE_LARGE)
+    private val loadFiveHundredAction = LoadMoreAction(LOAD_MORE_LARGE, hideWhileLoading = true)
 
-    /** 「+N」动作工厂（对齐原版 `ToBeMergedDialog.MoreXAction`）。 */
-    private fun createLoadMoreAction(textKey: String, quantity: Int) = object : DumbAwareAction(
-        EnhanceMergeBundle.message(textKey),
-        EnhanceMergeBundle.message(textKey),
+    /**
+     * 「+N」加载更多动作 —— **复刻原版 `org.jetbrains.idea.svn.integrate.MoreAction`**。
+     *
+     * ## 为什么用 [CustomComponentAction]（而不是普通 action）
+     *
+     * 原版的「Load +100 / Load +500」**不是**平台默认的 `ActionButton`（扁平文字按钮），
+     * 而是经 [CustomComponentAction] 塞进工具栏的**真实 Swing 按钮**（[JButton]，带边框的立体按钮）。
+     * 两者观感差别明显；本项目的目标就是「与原版 SVN 插件一致」，故照搬该做法。
+     * 原版实现：`G:\gitDownload\svn4idea\plugins\svn4idea\src\org\jetbrains\idea\svn\integrate\MoreAction.java`。
+     *
+     * ## 状态语义（对齐原版）
+     *
+     * - 加载中：按钮隐藏、原地显示 `Loading...`（原版 `MoreAction.setEnabled`）；
+     *   「+500」的动作同时整体从工具栏移除（原版 `MoreXAction.perform`），避免出现两个 `Loading...`；
+     * - 已取完全部修订（`loader.allLoaded`）：整个动作从工具栏移除（原版 `setAllListsLoaded`）；
+     * - 触达本插件自有的总量上限（[MAX_LOADED_ALL]）：按钮保留但置灰，tooltip 说明原因。
+     *
+     * ## 为什么用 [FlowLayout] 而不是原版的 `java.awt.BoxLayout`
+     *
+     * 原版 `MoreAction` 用 `java.awt.BoxLayout`。但本项目的**编译基线 JDK 11**
+     * （`D:/softwares/Java/jdk-11.0.32.1`）的 jimage 里**没有 `java.awt.BoxLayout`**
+     * （该构建把它挪成了 `javax.swing.BoxLayout`，jimage 清单实测确认），
+     * 而 IDE 运行时 JBR 只有 `java.awt.BoxLayout` —— 两端取交集为空，
+     * 直接照抄原版会编译不过、改用 `javax.swing.BoxLayout` 又会在运行时 `NoClassDefFoundError`。
+     * 故改用两端都有的 [FlowLayout]（`LEFT` + 0 间距）：按钮与提示文字互斥显示，
+     * 行高取两者最大、垂直居中，观感与原版的 `BoxLayout` 等价。
+     */
+    private inner class LoadMoreAction(
+        private val quantity: Int,
+        /** 加载中是否整个动作从工具栏移除（原版只对「+500」这么做）。 */
+        private val hideWhileLoading: Boolean,
+    ) : DumbAwareAction(
+        EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity),
+        EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity),
         null,
-    ) {
+    ), CustomComponentAction {
+
+        /** 原版同款：真实 Swing 按钮（margin = 2px）。 */
+        private val loadButton = JButton(EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity)).apply {
+            margin = JBUI.insets(2)
+        }
+
+        /** 原版同款：加载中的 `Loading...` 提示（灰色）。 */
+        private val loadingLabel = JLabel(CommonBundle.getLoadingTreeNodeText()).apply {
+            foreground = UIUtil.getInactiveTextColor()
+            border = JBUI.Borders.empty(1, 3, 1, 1)
+        }
+
+        private val customComponent: JComponent = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            add(loadButton)
+            add(loadingLabel)
+        }
+
+        init {
+            loadButton.addActionListener { loadMore(quantity) }
+            syncState()
+        }
+
+        override fun createCustomComponent(presentation: Presentation, place: String): JComponent = customComponent
+
+        /** 键盘 / 菜单路径触发（原版 `MoreAction.actionPerformed` 同款）。 */
+        override fun actionPerformed(e: AnActionEvent) = loadMore(quantity)
+
         override fun update(e: AnActionEvent) {
             val atLimit = loadedAll.size >= MAX_LOADED_ALL
-            e.presentation.isEnabled = !loadingMore && !loader.allLoaded && !atLimit
-            e.presentation.isVisible = !loadingMore && !loader.allLoaded
-            // 到达总量上限时说明原因：否则按钮只是"点了没反应"（静默截断）
+            e.presentation.isEnabled = !loadingMore && !atLimit
+            e.presentation.isVisible = !isHidden()
             e.presentation.description = if (atLimit) {
                 EnhanceMergeBundle.message("status.load.limit.reached", MAX_LOADED_ALL.toString())
             } else {
-                EnhanceMergeBundle.message(textKey)
+                EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity)
             }
         }
 
-        override fun actionPerformed(e: AnActionEvent) = loadMore(quantity)
+        /** 整个动作是否应从工具栏移除。 */
+        private fun isHidden(): Boolean = loader.allLoaded || (hideWhileLoading && loadingMore)
+
+        /**
+         * 把状态同步到组件（按钮 ↔ `Loading...` 互换、置灰、整体隐藏）。
+         *
+         * **必须在 EDT 调用**：平台何时回调 [update] 不确定，故视觉状态由本插件自己驱动，
+         * 不依赖平台的刷新时机（原版 `MoreAction.setEnabled` 也是直接改自己的组件）。
+         */
+        fun syncState() {
+            customComponent.isVisible = !isHidden()
+            loadButton.isVisible = !loadingMore
+            loadButton.isEnabled = !loadingMore && loadedAll.size < MAX_LOADED_ALL
+            loadingLabel.isVisible = loadingMore
+        }
+    }
+
+    /**
+     * 把「加载中 / 触达上限 / 已取完」的状态同步到两个「+N」按钮（**EDT 调用**）。
+     *
+     * 平台对 [update] 的回调时机不确定，故视觉状态由本插件主动驱动（原版同款做法）。
+     */
+    private fun syncLoadMoreButtons() {
+        loadHundredAction.syncState()
+        loadFiveHundredAction.syncState()
     }
 
     /** 面板的根组件（`buildComponent` 只构建一次，init 里赋值）。 */
@@ -397,6 +482,7 @@ class RevisionSelectPanel(
         if (loadedAll.size >= MAX_LOADED_ALL) return
         cancelLoadTask()
         loadingMore = true
+        syncLoadMoreButtons()
         refreshToolbar()
         val generation = loader.snapshot()
 
@@ -433,6 +519,7 @@ class RevisionSelectPanel(
                 // ⚠️ `loadingMore` 必须无条件复位：早退分支会让「+N」按钮永久消失（无法再加载）
                 loadingMore = false
                 if (isDisposed || context.project.isDisposed) return
+                syncLoadMoreButtons()
                 refreshToolbar()
             }
         })
@@ -443,6 +530,7 @@ class RevisionSelectPanel(
         // ⚠️ 去重语义见 [RevisionAccumulator]：只与「此前已加载的集合」去重，
         // **必须保留批内重复项**（SVN 的合并修订按路径展开成同修订号的多条，是不同条目）。
         loadedAll = RevisionAccumulator.merge(loadedAll, added)
+        syncLoadMoreButtons()
         applyFilterToModel()
         refreshMergeStatus(added)
         refreshList()
@@ -789,6 +877,13 @@ class RevisionSelectPanel(
         /** 「+N」两个动作的每次追加条数（对齐原版 `ToBeMergedDialog.MoreXAction`）。 */
         const val LOAD_MORE_SMALL = 100
         const val LOAD_MORE_LARGE = 500
+
+        /**
+         * 「+N」按钮文案（对齐原版 `SvnBundle.properties` 的 `button.load.quantity=Load +{0}`）。
+         *
+         * 用 `{0}` 占位而非两个固定 key：数量只有 100 / 500 两个值，但文案格式必须与原版一致。
+         */
+        const val LOAD_MORE_TEXT_KEY = "action.load.quantity"
 
         /** 左右分栏的分隔条宽度（经 JBUI 缩放）。 */
         const val SPLITTER_DIVIDER_WIDTH = 2

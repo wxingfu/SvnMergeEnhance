@@ -64,7 +64,8 @@ Merge from <branch>
 | 行内容 | `[复选框] [ListMergeStatus 图标] 修订号 提交说明 提交者 日期(yyyy/MM/dd HH:mm) 文件数摘要` | 用户截图 + `CommittedChangeListRenderer.renderChangeList` |
 | 状态图标 | `ListMergeStatus`：COMMON(`SvnIcons.Common`) / MERGED(`Integrated`) / NOT_MERGED(`Notintegrated`，即截图中的 `+`) / ALIEN(null) / REFRESHING(`Nodes.Unknown`) | `ListMergeStatus.kt:8-14` |
 | 工具栏 | 仅 4 个动作：`MySelectAll` / `MyUnselectAll` / `MoreXAction(100)` / `MoreXAction(500)` | `ToBeMergedDialog.java:296-300` |
-| +N 行为 | 加载中：隐藏 +500、禁用 +100/+500；完成：恢复并 `addRows` 追加；到底：两按钮隐藏 | `ToBeMergedDialog.java:126-153, 375-392` |
+| +N 按钮的**渲染方式** | `MoreXAction` 继承 `MoreAction`，而 `MoreAction` 实现 **`CustomComponentAction`** —— 工具栏里放的是**真实 Swing 按钮 `JButton`**（`margin=JBUI.insets(2)`，文字 `Load +{0}`，见 `SvnBundle.properties` 的 `button.load.quantity`），**不是**平台默认的扁平 `ActionButton`；另带一个灰色 `Loading...` 标签（`CommonBundle.getLoadingTreeNodeText()`） | `MoreAction.java:21-45`（`createCustomComponent` / `setEnabled` 换按钮↔标签）；`ToBeMergedDialog.java:375-392` |
+| +N 行为 | 加载中：隐藏 +500、禁用 +100/+500（按钮位置显示 `Loading...`）；完成：恢复并 `addRows` 追加；到底：两按钮隐藏 | `ToBeMergedDialog.java:126-153, 375-392` |
 | 布局 | `Splitter(false, 0.7f)`，`dividerWidth=2`；右栏 `CommittedChangesBrowser` + `[Already merged]` 装饰 | `ToBeMergedDialog.java:282-288, 311-324` |
 | 搜索 | **无显式搜索框**；仅隐式 `TableViewSpeedSearch`（`getItemText` = commit comment，`setupListeners()`） | `ToBeMergedDialog.java:252-258` |
 | 状态栏 | **无自定义状态栏** | 全文无 `createSouthAdditionalPanel` |
@@ -162,7 +163,11 @@ private inner class OriginalCellRenderer : TableCellRenderer {
 ### 5.5 工具栏与 +N 行为对齐原版
 
 - 动作集合：`MySelectAll` / `MyUnselectAll` / `MoreXAction(100)` / `MoreXAction(500)`（图标同原版：
-  `AllIcons.Actions.Selectall` / `Unselectall`，+N 两个用文字 `+100`/`+500`）。
+  `AllIcons.Actions.Selectall` / `Unselectall`；+N 两个是**文字按钮**）。
+- **+N 按钮的渲染方式必须复刻原版（2026-10-30 补正）**：原版 `MoreAction` 实现
+  `CustomComponentAction`，工具栏里渲染的是**真实 Swing 按钮 `JButton`**（带边框的立体按钮，
+  文字 `Load +100` / `Load +500`），而非平台默认的扁平 `ActionButton`；
+  加载中按钮隐藏、原地显示灰色 `Loading...`。实现见 `ui/RevisionSelectPanel.LoadMoreAction`。
 - 显隐语义对齐原版：`loader.allLoaded` → 两个 +N **隐藏**（不是置灰）；
   加载中 → 隐藏 +500、禁用 +100（原版 `MoreXAction.perform()` 行为）；
 - 「合并前本地改动提示」链路（`LocalChangesPromptTask`）与 `MergeExecutor` **不动**。

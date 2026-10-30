@@ -23,7 +23,10 @@
 ## B. 界面回归原版（对照用户 2026-10-20 截图）
 
 - [ ] B1 标题 = `Merge from <branch>`（来自 `MergeContext.mergeTitle`）
-- [ ] B2 工具栏**只有** 4 个动作：Select all / Unselect all / +100 / +500（图标与原版一致）
+- [ ] B2 工具栏**只有** 4 个动作：Select all / Unselect all / `Load +100` / `Load +500`（图标与原版一致）
+- [ ] B2' 「+N」两个按钮是**原版同款立体 Swing 按钮**（`CustomComponentAction` + `JButton`，
+      文字 `Load +100` / `Load +500`），不是平台扁平文字按钮；加载中按钮位置显示 `Loading...`
+      （2026-10-30 补充，人工目视验收项）
 - [ ] B3 无 Show All、无 Refresh、无日期控件、无 By 下拉、无正则/大小写开关
 - [ ] B4 表格无表头、无网格线、平台默认行高
 - [ ] B5 行渲染 = 复选框(最左) + 状态图标 + 修订号 + 提交说明 + 日期 + 文件摘要

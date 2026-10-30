@@ -42,8 +42,11 @@
 - [ ] T3.1 删除 `showAllAction` / `reloadAction` / `loadAll()` / `reloadAll()` 及其 import
       （`AllIcons.Actions.Download` / `Refresh` 等）
 - [ ] T3.2 删除 `refreshToolbar()` 中对已删动作的引用；`ActionToolbar` place 保持 `"SvnEnhanceMergeRevisions"`
-- [ ] T3.3 `createLoadMoreAction` 显隐对齐原版：`update` 中 `isVisible = !loadingMore && !loader.allLoaded`；
+- [ ] T3.3 「+N」显隐对齐原版：`update` 中 `isVisible` 受 `loader.allLoaded` 与「加载中」约束；
       加载中在 `loadMore(quantity)` 内对「另一个 +N」做隐藏 / 禁用（原版语义：加载中隐藏 +500、禁用 +100/+500）
+      —— **2026-10-30 实施现状**：实现已由工厂方法 `createLoadMoreAction` 改为内部类
+      `LoadMoreAction`（复刻原版 `MoreAction`，走 `CustomComponentAction` 渲染真实 Swing 按钮，
+      文案 `Load +100` / `Load +500`），显隐/置灰由本插件的 `syncState()` 主动驱动（EDT）。
 - [ ] T3.4 确认 `createToolbar()` 动作集合恰好 4 个且顺序 = Select all / Unselect all / +100 / +500
 - [ ] T3.5 `gradlew test` 绿
 
