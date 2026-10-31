@@ -1,7 +1,8 @@
 # Tasks — 版本选择对话框原版化 + 显式搜索过滤（第五轮）
 
 > **实施状态：✅ 已完成（2026-10-21）**。T1~T13 全部执行完毕，验证结果见文末。
-> 保存分支：`save/pre-v3-original-align`（第四轮完成态）；本轮改动全部在 `main` 上提交。
+> 保存点：第四轮完成态提交 `31c3d35`（原 `save/pre-v3-original-align` 分支，**已随分支清理删除**，
+> 该提交仍在 `main` 历史中）；本轮改动全部在 `main` 上提交。
 
 > 需求编号见同目录 `spec.md`（R1~R11）；方案与调研留痕见
 > `.codebuddy/plan/RevisionSelect-AlignOriginal-AddSearch-plan.md`。

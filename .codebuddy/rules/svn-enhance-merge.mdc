@@ -353,7 +353,8 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 > Show All / Refresh / 状态栏 / 隐式 speed search」相关的全部设计。方案文档：
 > `.codebuddy/plan/RevisionSelect-AlignOriginal-AddSearch-plan.md`；需求/任务/验收：
 > `.codebuddy/specs/add-revision-search-filter/{spec,tasks,checklist}.md`。
-> 保存分支：`save/pre-v3-original-align`（= 第四轮完成态 `31c3d35`，已推送）。
+> 保存点：第四轮完成态提交 `31c3d35`（原 `save/pre-v3-original-align` 分支，**已随分支清理删除**，
+> 该提交仍在 `main` 历史中可随时检出）。
 
 #### 用户痛点与决策（勿再反复讨论）
 
