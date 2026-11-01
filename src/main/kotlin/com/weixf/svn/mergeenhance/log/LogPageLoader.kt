@@ -55,7 +55,7 @@ class LogPageLoader(
     /**
      * 数据源（**注入点，测试用**）。为 null 时走 `SvnCommittedChangesProvider.getCommittedChanges`
      * （只含源分支自身修订、不走缓存，见 [loadOwnBranchRevisions]）。
-     * @return 原始页 + 平台「是否还有更多」判定
+     * @return 原始页 + 「是否**已取完**」判定（没有更多时为 `true`；注意语义是"已取完"而非"还有更多"）
      */
     private val cursorSource: ((cursor: Long, size: Int) -> Pair<List<SvnChangeList>, Boolean>)? = null,
 ) {
@@ -113,40 +113,59 @@ class LogPageLoader(
      *   本次调用直接返回空，调用方应据此放弃本轮工作。
      * @param indicator 可选的进度指示器：**每批之间**检查一次取消点，
      *   使进度条上的「取消」能真正中止分页（否则按了取消也停不下来——分页循环本身不感知 indicator）。
+     * @param onBatchLoaded 可选的进度回调：每取回一批就被调用一次，参数是**累计已取回条数**。
+     *   官方要求「总量未知时用不确定进度 + 计数文本说明进度」，调用方据此更新 `indicator.text2`。
+     *   在**后台线程**被调用。
      */
     fun loadNextPageRaw(
         pageSize: Int,
         expectedGeneration: Long,
         indicator: ProgressIndicator? = null,
+        onBatchLoaded: ((Int) -> Unit)? = null,
     ): List<SvnChangeList> {
         if (expectedGeneration != generation) return emptyList()
-        return loadByCursorRaw(pageSize, expectedGeneration, indicator)
+        return loadByCursorRaw(pageSize, expectedGeneration, indicator, onBatchLoaded)
     }
 
     private fun loadByCursorRaw(
         pageSize: Int,
         expectedGeneration: Long,
         indicator: ProgressIndicator?,
+        onBatchLoaded: ((Int) -> Unit)?,
     ): List<SvnChangeList> {
         if (allLoaded) return emptyList()
         val raw = ArrayList<SvnChangeList>()
+        // 事务性状态：只有本次调用**正常返回**（未被取消、世代号未变）才写回字段。
+        //
+        // ⚠️ 为什么不能边取边写字段（2026-11-01 修复）：原实现取完一批就立刻推进 `cursor`，
+        // 而这批数据要等方法**正常返回**才交给调用方。若此时被取消（ProcessCanceledException），
+        // 该批数据被丢弃、但游标已越过它 → 那一批修订此后**永远不会被取回**（静默丢修订）；
+        // 若该批恰好同时把 `allLoaded` 置真，则这批数据永久缺失且不再有任何加载机会。
+        var newCursor = cursor
+        var newAllLoaded = false
         var batches = 0
-        while (raw.size < pageSize && !allLoaded && batches < MAX_BATCHES) {
-            // 每轮检查一次世代号：reset 发生后立即停止，避免把旧数据继续塞进来
-            if (expectedGeneration != generation) return raw
+        while (raw.size < pageSize && !newAllLoaded && batches < MAX_BATCHES) {
+            // 每轮检查一次世代号：reset 发生后立即停止，**返回空**（与类文档承诺一致：
+            // 旧世代的数据一律作废，不得混进新缓冲）
+            if (expectedGeneration != generation) return emptyList()
             // 取消点：抛 ProcessCanceledException → 平台的 Task 走 onCancel/onThrowable，不再写回数据
             indicator?.checkCanceled()
             batches++
-            val result = cursorSource?.invoke(cursor, pageSize) ?: loadOwnBranchRevisions(cursor, pageSize)
+            val result = cursorSource?.invoke(newCursor, pageSize) ?: loadOwnBranchRevisions(newCursor, pageSize)
             val page = result.first
             if (page.isEmpty()) {
-                allLoaded = true
+                newAllLoaded = true
                 break
             }
-            cursor = page.last().number
-            allLoaded = result.second && page.size < pageSize
+            newCursor = page.last().number
+            newAllLoaded = result.second && page.size < pageSize
             raw.addAll(page)
+            // 进度回调（后台线程）：让调用方能显示「已取回 N 条」
+            onBatchLoaded?.invoke(raw.size)
         }
+        // 正常返回 → 一次性提交游标与结束标志
+        cursor = newCursor
+        allLoaded = newAllLoaded
         return raw
     }
 
@@ -182,9 +201,21 @@ class LogPageLoader(
             settings.USE_CHANGE_BEFORE_FILTER = true
         }
         val provider = context.vcs.committedChangesProvider
-        // 多取一条用于判定「是否还有更多」（与原版 loadChangeLists 的判定方式一致）
-        val fetched = provider.getCommittedChanges(settings, SvnRepositoryLocation(context.sourceUrl), size + 1)
-        return fetched.take(size) to (fetched.size <= size)
+        // ⚠️ **「CHANGE_BEFORE」的区间含端点**（2026-11-01 修复 P0-1）：
+        // 带 `CHANGE_BEFORE=cursor` 请求时，游标那条修订会**再次**出现在结果里。
+        // 原版对此有明确处理——`MergeCalculatorTask.getChangeLists` 请求 `size + 2` 并**显式剔除**
+        // `revisionToExclude`（= 上一页最旧的修订）：
+        //   size > 0 ? size + (revisionToExclude > 0 ? 2 : 1) : 0
+        //   if (revisionToExclude != changeList.getNumber()) { result.add(...) }
+        //
+        // 不剔除的后果（**静默丢修订**）：重复条目占掉了 `take(size)` 的一个名额，
+        // 于是每翻一页就有一条**更新的新修订**被挤掉；而游标已越过它，
+        // 那条修订此后既不会出现在列表里、也不会进入合并集合——用户永远看不到它。
+        val extra = if (cursor > 0) EXTRA_FOR_CURSOR_BOUNDARY else 1
+        val fetched = provider.getCommittedChanges(settings, SvnRepositoryLocation(context.sourceUrl), size + extra)
+        val fresh = if (cursor > 0) fetched.filter { it.number != cursor } else fetched
+        // 「是否已取完」：剔除重复后不足一页即到底（对齐原版 `changeLists.size() < size + 1`）
+        return fresh.take(size) to (fresh.size <= size)
     }
 
     /**
@@ -209,5 +240,14 @@ class LogPageLoader(
          * 10 批 × pageSize 是可接受的最坏情况。
          */
         const val MAX_BATCHES = 10
+
+        /**
+         * 翻页时**多取**的条数（游标 > 0 时）。
+         *
+         * 「CHANGE_BEFORE」区间含端点 → 游标那条修订会重复出现 → 必须多取一条并剔除它，
+         * 否则 `take(size)` 会挤掉一条**更新的新修订**（它比游标新，此后永不再取回）。
+         * 数字与原版 `MergeCalculatorTask.getChangeLists` 的 `size + 2` 一致。
+         */
+        const val EXTRA_FOR_CURSOR_BOUNDARY = 2
     }
 }

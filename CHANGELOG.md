@@ -49,6 +49,24 @@
 - 界面文案英文 + 简体中文，按 IDE 语言包状态自动切换。
 
 ### 变更
+- **构建：关闭 IPGP 自更新检查**（2026-11-01）：`gradle.properties` 增加
+  `org.jetbrains.intellij.buildFeature.selfUpdateCheck=false`。该检查只为提示 IPGP 是否有新版本，
+  却在网络受限 / GitHub 限流 / 代理拦截重定向时让构建**在 `initializeIntelliJPlugin` 阶段直接失败**
+  （`Cannot resolve the latest Gradle IntelliJ Plugin version` + `getHeaderField("Location") must not be null`），
+  与本项目代码无关。等效规避：加 `--offline`。
+- **许可证：MIT → Apache-2.0**（2026-11-01）：许可全文随插件包分发（包根目录 `LICENSE`），
+  `plugin.xml` 增 `<license>Apache-2.0</license>`；许可变更记录见 README「许可证」章节。
+- **上架元数据完善（2026-11-01）**：`plugin.xml` 增 `<category>VCS</category>`；
+  `<change-notes>` 按**当前入口**（常驻「Enhance Merge」标签页）重写——原文本仍在描述
+  早已删除的「反射注入链接」入口，会直接显示在 Marketplace 页面上；
+  描述页补「2026.x 需自行安装官方 Subversion 插件」「隐私声明（不收集任何数据）」「支持链接」；
+  新增随包分发的 `THIRD-PARTY-LICENSES.txt`（本插件零分发第三方组件的正式声明）。
+  ⚠️ 许可证 / 支持渠道**不写进 `plugin.xml`**：IDEA 2022.1 不识别 `<license>` / `<support>` 元素
+  （沙箱实测 `Unknown element`，会让插件加载失败），改为写在描述页 + Marketplace 后台字段。
+- **规范修正（2026-11-01）**：此前「`javax.swing.BoxLayout` 在运行时不可用（`NoClassDefFoundError`）」的
+  结论**是错的**——实测：编译基线 JDK 11 的 `java.desktop` 模块**只有** `javax/swing/BoxLayout.class`，
+  且 IDEA 2022.1 捆绑的 svn4idea `MoreAction.class` 字节码引用的也是 `javax/swing/BoxLayout`
+  （若运行时没有它，原版「+N」按钮必崩）。相关注释与规则文档已更正，避免后续被「按文档」改错。
 - **删除反射注入入口（D1 ②，2026-10-22）**：移除 `WcInfoLinkInjector`（反射 `WorkingCopyInfoPanel.getInfo()`
   + 2s 定时器扫组件树注入链接）及其整条模态链路（`EnhanceMergeAction` / `MergeVariantDialog` /
   `RevisionSelectDialog` / `MergeFlow.start` / `MergeFlow.openRevisionSelect`），入口唯一化为官方标签页；
@@ -94,6 +112,39 @@
   - 加载器 `LogPageLoader` 简化为**单通道游标分页**（删除按日期的服务端查询模式），并引入"世代号"机制：过滤条件变化时旧的在飞加载任务立即作废、连一次请求都不发，杜绝旧条件数据串进新缓冲。
 
 ### 修复
+- **【修复】分页**静默丢修订**（2026-11-01，上架前代码审查 P0）**：
+  - **根因**：「CHANGE_BEFORE」的区间**含端点**——带游标请求时，游标那条修订会**重复**出现在结果里。
+    原版 `MergeCalculatorTask.getChangeLists` 对此有明确处理（请求 `size + 2` 并**显式剔除**
+    `revisionToExclude`），本插件原先只请求 `size + 1` 且未剔除 → 重复条目占掉 `take(size)` 的名额，
+    于是一条**更新的新修订**被挤掉；而游标已越过它 → 那条修订此后既不显示、也不进合并集合（静默丢失）。
+  - **修法**：翻页时请求 `size + 2` 并剔除 `number == cursor` 的条目；「是否取完」按剔除后的条数判定
+    （对齐原版 `changeLists.size() < size + 1`）。
+  - **回归**：`LogPageLoaderTest` 新增用例「翻页边界剔除重复条且不丢更新的新修订」。
+- **【修复】取消分页会推进游标（2026-11-01 P1）**：加载器改为**事务性提交**——游标与「已取完」标志
+  只在本次调用正常返回时才写回；被取消时游标不动，用户重试仍能取回该批数据（原实现会丢掉整批）。
+- **【修复】加载更多后表格可能被旧快照覆盖（2026-11-01 P1）**：「+N」加载完成时未推进过滤令牌，
+  在飞的过滤任务仍会把**旧快照**的结果写回表格（刚加载的条目凭空消失、计数标签退回旧值）。
+  现在两个入口都推进令牌，且过滤循环逐条检查中断。
+- **【修复】合并前置步骤失败会「静默无反应」（2026-11-01 P1）**：`LocalChangesPromptTask` 抛异常时
+  原先只写日志 → 用户点了合并却什么都没发生；现在弹错误提示；且回调统一回到 EDT
+  （「搁置」分支原先在后台线程回调，导致 `saveAllDocuments()` 不在 EDT）。
+- **【修复】分支 URL 构造失败会变成 IDE 内部错误（2026-11-01 P1）**：`Url.appendPath` 抛的
+  `SvnBindException` 原先未捕获（异常一路冒到平台弹窗回调）；现在给出可读提示（对齐原版 `CopiesPanel`）。
+- **【修复】修订选择对话框的「合并所选」初始可点（2026-11-01 P1）**：面板在 `DialogWrapper.init()` 之前构造，
+  其状态同步那时尚未跑过 → 空选时点「合并所选」毫无反应；现在 `init()` 之后补一次同步。
+- **【修复】工作副本列表刷新可能被旧快照覆盖（2026-11-01 P1）**：刷新任务加世代号并取消上一次任务
+  （连点刷新时，先发起的旧任务可能后完成 → 列表回退到旧的工作副本集合）。
+- **【修复】设置项与实际行为不符（2026-11-01 P1）**：「每页版本数」只作用于**首屏**，
+  「+100 / +500」固定追加对应条数（原版语义）——设置页提示文案已改为与行为一致。
+- **【修复】文案缺失 / 平台异常不再冒泡（2026-11-01 P2）**：`EnhanceMergeBundle.message()` 缺 key 时
+  回退显示 key 本身（原先抛 `MissingResourceException`，在 Swing 回调里会变成插件内部错误日志）；
+  `runCatching`（等价 `catch (Throwable)`）改为按规范分两段捕获。
+- **【修复】HiDPI / 无障碍 / 进度提示（2026-11-01 P2）**：工作副本列表的纵向间距改走 `JBUI.scale`；
+  行首复选框补 `accessibleContext.accessibleName`；「+N」加载进度补 `text2` 计数
+  （官方要求：总量未知时用不确定进度 + 计数文本，不得编造百分比）。
+- **【修复】消息格式与性能细节（2026-11-01 P2）**：「+N」数量参数改传 `toString()`
+  （`MessageFormat` 会给 Number 套本地化格式，1000 会显示成 `1,000`）；过滤时的 token 小写化改为缓存、
+  拼接串只小写化一次（此前每条修订都重复小写化）。
 - **【修复】版本选择界面的「+100 / +500」按钮样式与原版 SVN 插件不一致（2026-10-30）**：
   原版的「Load +100 / Load +500」**不是**平台默认的 `ActionButton`（扁平文字按钮），
   而是经 `CustomComponentAction` 塞进工具栏的**真实 Swing 按钮**（`JButton`，带边框的立体按钮），

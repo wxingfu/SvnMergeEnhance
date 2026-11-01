@@ -44,6 +44,7 @@ import com.weixf.svn.mergeenhance.log.LogPageLoader
 import com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings
 import org.jetbrains.idea.svn.history.SvnChangeList
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicReference
 import org.jetbrains.idea.svn.integrate.MergeContext
@@ -224,11 +225,11 @@ class RevisionSelectPanel(
     private val rightPaneAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
 
     /**
-     * 在飞的后台任务：过滤（[filterTask]）与合并状态计算（[mergeStatusTask]）各自独立，
-     * 面板释放时中断，避免面板销毁后继续跑。
+     * 在飞的后台任务：过滤（[filterTask]，同类只留最新一个）与合并状态计算
+     * （[mergeStatusTasks]，**全部登记**，面板释放时逐个中断），避免面板销毁后继续跑。
      */
     private val filterTask = AtomicReference<Future<*>?>(null)
-    private val mergeStatusTask = AtomicReference<Future<*>?>(null)
+    private val mergeStatusTasks = CopyOnWriteArrayList<Future<*>>()
 
     /**
      * 启动一个后台任务并登记到 [ref]（同一时刻只保留最新一个）。
@@ -239,12 +240,13 @@ class RevisionSelectPanel(
      *     中断会让**先加载的那批修订永远拿不到状态图标**——整片行首无图标，
      *     看起来就像「版本缺失」）。多个任务并发时由 [mergeCheckerLock] 串行化，安全。
      */
-    private fun launchTask(
-        ref: AtomicReference<Future<*>?>,
-        cancelPrevious: Boolean = true,
-        block: () -> Unit,
-    ) {
-        if (cancelPrevious) ref.getAndSet(null)?.cancel(true)
+    /**
+     * 启动**过滤**任务：同类任务**只保留最新一个**（新任务会取消旧任务）。
+     *
+     * 过滤任务**要**中断：连续敲搜索词时，前几轮全量过滤的结果本就会被 `filterToken` 丢弃。
+     */
+    private fun launchFilterTask(block: () -> Unit) {
+        filterTask.getAndSet(null)?.cancel(true)
         val future = ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 block()
@@ -252,7 +254,28 @@ class RevisionSelectPanel(
                 // 任务被取消（面板释放 / 被新任务取代）：静默丢弃
             }
         }
-        ref.set(future)
+        filterTask.set(future)
+    }
+
+    /**
+     * 启动**合并状态计算**任务：同类任务**可以并存**（刻意不取消旧任务）。
+     *
+     * 为什么不能取消：它算的是「已加载的那些修订」的状态，中断会让**先加载的那批修订永远拿不到
+     * 状态图标**——整片行首无图标，看起来就像「版本缺失」。多个任务并发时由 [mergeCheckerLock] 串行化。
+     *
+     * ⚠️ 在飞任务**全部登记**在 [mergeStatusTasks] 里（而非只留最后一个）：
+     * 只留最后一个时，面板释放只能取消它，其余任务仍在跑（`mergeChecker.checkList` 不响应中断），
+     * 跑完还会往已清空的 [mergeStatusMap] 里写 —— 面板关闭后仍占用线程与 SVN 连接。
+     */
+    private fun launchMergeStatusTask(block: () -> Unit) {
+        val future = ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                block()
+            } catch (e: ProcessCanceledException) {
+                // 面板释放导致的中断：静默丢弃
+            }
+        }
+        mergeStatusTasks.add(future)
     }
 
     /** 动态「+N」动作。**必须在 `init` 之前声明**。 */
@@ -277,28 +300,34 @@ class RevisionSelectPanel(
      * - 已取完全部修订（`loader.allLoaded`）：整个动作从工具栏移除（原版 `setAllListsLoaded`）；
      * - 触达本插件自有的总量上限（[MAX_LOADED_ALL]）：按钮保留但置灰，tooltip 说明原因。
      *
-     * ## 为什么用 [FlowLayout] 而不是原版的 `java.awt.BoxLayout`
+     * ## 为什么用 [FlowLayout] 而不是原版的 `javax.swing.BoxLayout`
      *
-     * 原版 `MoreAction` 用 `java.awt.BoxLayout`。但本项目的**编译基线 JDK 11**
-     * （`D:/softwares/Java/jdk-11.0.32.1`）的 jimage 里**没有 `java.awt.BoxLayout`**
-     * （该构建把它挪成了 `javax.swing.BoxLayout`，jimage 清单实测确认），
-     * 而 IDE 运行时 JBR 只有 `java.awt.BoxLayout` —— 两端取交集为空，
-     * 直接照抄原版会编译不过、改用 `javax.swing.BoxLayout` 又会在运行时 `NoClassDefFoundError`。
-     * 故改用两端都有的 [FlowLayout]（`LEFT` + 0 间距）：按钮与提示文字互斥显示，
-     * 行高取两者最大、垂直居中，观感与原版的 `BoxLayout` 等价。
+     * 原版 `MoreAction` 用的是 **`javax.swing.BoxLayout`**（**不是** `java.awt.BoxLayout`——
+     * 后者在 JDK 11 已被移除，编译基线与 IDE 运行时的 JBR 11 都不存在它）。
+     *
+     * ⚠️ **更正（2026-11-01，实测）**：此前本注释与规则文档都断言「运行时 JBR 只有
+     * `java.awt.BoxLayout`、`javax.swing.BoxLayout` 会 `NoClassDefFoundError`」——**该结论是错的**：
+     * ① 编译基线 JDK 11 的 `java.desktop` 模块里**只有** `javax/swing/BoxLayout.class`
+     * （`jar tf java.desktop.jmod` 实测，无 `java/awt/BoxLayout.class`）；
+     * ② IDEA 2022.1 捆绑的 svn4idea `MoreAction.class` 字节码引用的也是 `javax/swing/BoxLayout`
+     * ——若运行时没有它，原版「+N」按钮必崩。故 `javax.swing.BoxLayout` **两端都可用**
+     * （`MergeVariantDialog` 用的就是它，安全）。
+     *
+     * 此处保留 [FlowLayout]（`LEFT` + 0 间距）只为布局观感与原版等价、且不依赖具体布局实现：
+     * 按钮与提示文字互斥显示，行高取两者最大、垂直居中。
      */
     private inner class LoadMoreAction(
         private val quantity: Int,
         /** 加载中是否整个动作从工具栏移除（原版只对「+500」这么做）。 */
         private val hideWhileLoading: Boolean,
     ) : DumbAwareAction(
-        EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity),
-        EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity),
+        EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity.toString()),
+        EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity.toString()),
         null,
     ), CustomComponentAction {
 
         /** 原版同款：真实 Swing 按钮（margin = 2px）。 */
-        private val loadButton = JButton(EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity)).apply {
+        private val loadButton = JButton(EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity.toString())).apply {
             margin = JBUI.insets(2)
         }
 
@@ -330,7 +359,8 @@ class RevisionSelectPanel(
             e.presentation.description = if (atLimit) {
                 EnhanceMergeBundle.message("status.load.limit.reached", MAX_LOADED_ALL.toString())
             } else {
-                EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity)
+                // 数量传 toString()：`MessageFormat` 会给 Number 套本地化数字格式（1000 → "1,000"）
+                EnhanceMergeBundle.message(LOAD_MORE_TEXT_KEY, quantity.toString())
             }
         }
 
@@ -382,7 +412,9 @@ class RevisionSelectPanel(
         // 中断在飞的任务：分页加载、过滤 / 合并状态计算、右栏防抖刷新
         cancelLoadTask()
         filterTask.getAndSet(null)?.cancel(true)
-        mergeStatusTask.getAndSet(null)?.cancel(true)
+        // 合并状态任务**全部**取消（可能同时有多个：每批加载都会起一个）
+        mergeStatusTasks.forEach { it.cancel(true) }
+        mergeStatusTasks.clear()
         rightPaneAlarm.cancelAllRequests()
         // 释放已算出的合并状态缓存（面板是长驻组件，缓存无主时及时回收）
         mergeStatusMap.clear()
@@ -496,11 +528,18 @@ class RevisionSelectPanel(
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
+                // 总量未知 → 不确定进度 + 计数文本（官方明令不许编造进度百分比）
+                indicator.text2 = EnhanceMergeBundle.message("progress.loaded.count", "0")
                 myIndicator = indicator
                 loadIndicator.set(indicator)
                 // 把 indicator 透传给 loader：每批之间检查一次取消点，
                 // 否则进度条上的「取消」按了也停不下来（分页循环本身不感知 indicator）
-                added.addAll(loader.loadNextPageRaw(quantity, generation, indicator))
+                added.addAll(
+                    loader.loadNextPageRaw(quantity, generation, indicator) { count ->
+                        // 后台线程回调：显示「已取回 N 条」，让用户知道 +500 进行到哪了
+                        indicator.text2 = EnhanceMergeBundle.message("progress.loaded.count", count.toString())
+                    }
+                )
             }
 
             override fun onSuccess() {
@@ -530,6 +569,10 @@ class RevisionSelectPanel(
         // ⚠️ 去重语义见 [RevisionAccumulator]：只与「此前已加载的集合」去重，
         // **必须保留批内重复项**（SVN 的合并修订按路径展开成同修订号的多条，是不同条目）。
         loadedAll = RevisionAccumulator.merge(loadedAll, added)
+        // ⚠️ 推进过滤令牌（2026-11-01 修复 P1-1）：在飞的过滤任务用的是**旧快照**，
+        // 其结果必须作废——否则它算完后会把旧视图写回表格（刚加载的条目凭空消失）。
+        // 此前只有 `onFilterChanged` 推进令牌，「+N」加载完成这条路径没推进 → 守卫失效。
+        filterToken++
         syncLoadMoreButtons()
         applyFilterToModel()
         refreshMergeStatus(added)
@@ -556,9 +599,17 @@ class RevisionSelectPanel(
         val filter = currentFilter
         val token = filterToken
         val snapshot = loadedAll          // 不可变快照（@Volatile 原子读，无需再拷贝）
-        launchTask(filterTask) {
+        launchFilterTask {
             val filtered = if (filter.hasSearchText) {
-                snapshot.filter { filter.matches(it) }
+                // ⚠️ 逐条判定并**检查中断**（2026-11-01 修复 P1-1）：
+                // 旧任务被新任务取代后仍会把「旧快照」的结果写回表格，
+                // 表现为刚加载的 +100/+500 条目凭空消失、计数标签退回旧值。
+                val matched = ArrayList<SvnChangeList>()
+                for (item in snapshot) {
+                    if (Thread.currentThread().isInterrupted) return@launchFilterTask
+                    if (filter.matches(item)) matched.add(item)
+                }
+                matched
             } else {
                 snapshot
             }
@@ -754,6 +805,8 @@ class RevisionSelectPanel(
         private val checkBox = JCheckBox().apply {
             isEnabled = true
             isOpaque = false
+            // 官方无障碍要求：纯图标/无文本控件必须给出可读名称（复选框本身没有文本）
+            accessibleContext.accessibleName = EnhanceMergeBundle.message("action.select.revision")
         }
 
         private val changeListRenderer = CommittedChangeListRenderer(
@@ -809,7 +862,7 @@ class RevisionSelectPanel(
     private fun refreshMergeStatus(lists: List<SvnChangeList>) {
         if (lists.isEmpty()) return
         if (isDisposed || context.project.isDisposed) return
-        launchTask(mergeStatusTask, cancelPrevious = false) {
+        launchMergeStatusTask {
             val prepared = synchronized(mergeCheckerLock) {
                 if (mergeCheckerPrepared) {
                     true
@@ -824,7 +877,7 @@ class RevisionSelectPanel(
                     }
                 }
             }
-            if (!prepared) return@launchTask
+            if (!prepared) return@launchMergeStatusTask
             ApplicationManager.getApplication().invokeLater(
                 {
                     if (!isDisposed && !context.project.isDisposed) onListSelectionChanged()
@@ -841,6 +894,8 @@ class RevisionSelectPanel(
                     // 失败也要落一个明确状态：否则渲染器永远回落成「刷新中」图标（看起来像还在算）
                     ListMergeStatus.COMMON
                 }
+                // 面板可能已被释放（dispose 时清空了缓存）：此时不再写回，避免复活已回收的状态
+                if (isDisposed) return@launchMergeStatusTask
                 mergeStatusMap[list.number] = status
                 if (--cnt <= 0) {
                     cnt = REPAINT_BATCH_SIZE
@@ -850,6 +905,16 @@ class RevisionSelectPanel(
             repaintTable()
         }
     }
+
+    /**
+     * 把当前勾选状态同步给宿主（[onSelectionChanged]）。
+     *
+     * 用途：宿主（模态对话框）在 `DialogWrapper.init()` **之后**调用一次，
+     * 让 OK（Merge Selected）按钮的初始可用态与实际勾选一致——
+     * 面板是在 `init()` 之前构造的，其 `updateStatus()` 那时尚未跑过，
+     * 若不补这一下，对话框打开即可点「合并所选」，而空选点击是**静默无反应**的。
+     */
+    fun syncSelectionState() = updateStatus()
 
     private fun repaintTable() {
         if (::revisionsList.isInitialized) {

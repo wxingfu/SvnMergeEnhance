@@ -76,6 +76,18 @@ alwaysApply: false
 5. **`patchPluginXml: attribute 'since-build=[221]' ... will be set to '221'`**：IPGP 的**无条件提示**
    （属性已存在就打 warn，与值是否变化无关，见 `PatchPluginXmlTask.patchAttribute`）。plugin.xml 的
    `<idea-version since-build="221"/>` 按规则保留，故此消息会一直在，属信息性噪音。
+6. **`Cannot resolve the latest Gradle IntelliJ Plugin version`（构建**直接失败**，2026-11-01 实测）**：
+   IPGP 的 `initializeIntelliJPlugin` 任务默认去 GitHub 查"IPGP 最新版本"（仅用于打印升级提示），
+   且**关闭了自动跟随重定向**（`instanceFollowRedirects = false`）直接取 `Location` 头：
+   网络受限 / GitHub 限流 / 代理拦截重定向时该头为 null →
+   `NullPointerException: getHeaderField("Location") must not be null` → 被包成
+   `GradleException("Cannot resolve the latest Gradle IntelliJ Plugin version")` →
+   **构建在 initializeIntelliJPlugin 阶段就挂掉**（与本项目代码无关）。
+   **已关闭**：`gradle.properties` 里
+   `org.jetbrains.intellij.buildFeature.selfUpdateCheck=false`
+   （开关名来自 IPGP 源码 `BuildFeature.SELF_UPDATE_CHECK.toString()`；默认 true）。
+   等效的另外两个跳过条件：`--offline`（`offline.convention = startParameter.isOffline`）、
+   或存在当日锁文件 `<temporaryDir>/<yyyy-MM-dd>`。**换机器 / 新克隆仓库时若又遇到，先查这一条。**
 
 ### JDK / 字节码 / Kotlin 版本兼容性基线（2026-10-20 实测，勿重复调研）
 
@@ -189,13 +201,17 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   `FormBuilder.addLineGap()`（用 `addVerticalGap(-1)` 代替）。
 - 其它已确认可用：`Alarm(ThreadToUse, Disposable)`、`CustomShortcutSet`、`DumbAwareAction`、
   `UIUtil.getErrorForeground/getContextHelpForeground`、`com.intellij.openapi.util.text.StringUtil`。
-- **禁用 `java.awt.BoxLayout`（本机编译基线 JDK 11 实测，2026-10-30）**：
-  编译基线 `D:/softwares/Java/jdk-11.0.32.1` 的 jimage 里**没有** `java.awt.BoxLayout`
-  （该构建把它挪成了 `javax.swing.BoxLayout`，`jimage list` 实测确认），
-  而 IDE 运行时 JBR 11 **只有** `java.awt.BoxLayout` —— 两端取交集为空：
-  写 `java.awt.BoxLayout` → 编译报 `Unresolved reference: BoxLayout`；
-  写 `javax.swing.BoxLayout` → 编译能过，但运行时 `NoClassDefFoundError`。
-  需要横向排列时用 `java.awt.FlowLayout`（两端都有，观感等价）。
+- **禁用 `java.awt.BoxLayout`（本机编译基线 JDK 11 实测，2026-10-30；**结论已于 2026-11-01 更正**）**：
+  编译基线 `D:/softwares/Java/jdk-11.0.32.1` 的 `java.desktop` 模块里**没有** `java.awt.BoxLayout`
+  （JDK 11 已把它移除并迁到 `javax.swing.BoxLayout`；`jar tf java.desktop.jmod` 实测确认只有
+  `classes/javax/swing/BoxLayout.class`）。
+  ⚠️ **更正**：此前这里写「IDE 运行时 JBR 11 **只有** `java.awt.BoxLayout`，
+  写 `javax.swing.BoxLayout` 会运行时 `NoClassDefFoundError`」——**该结论是错的**：
+  IDEA 2022.1 捆绑的 svn4idea `MoreAction.class` 字节码引用的正是 `javax/swing/BoxLayout`
+  （`javap -c` 实测；若运行时没有它，原版「+N」按钮必崩），故 `javax.swing.BoxLayout`
+  在编译期与运行时**都可用**（`ui/MergeVariantDialog.kt` 用的就是它，安全）。
+  需要横向排列时**仍建议**用 `java.awt.FlowLayout`（两端都有、观感等价、不依赖具体布局实现），
+  但**理由**是布局观感，而不是「javax.swing.BoxLayout 不可用」。
 - **「+N」加载更多按钮必须走 `CustomComponentAction`（2026-10-30 定稿）**：
   原版 svn4idea 的「Load +100 / Load +500」**不是**平台默认的 `ActionButton`（扁平文字按钮），
   而是 `org.jetbrains.idea.svn.integrate.MoreAction` 用 `CustomComponentAction`
@@ -222,28 +238,46 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   否则 `verifyPluginConfiguration` 报 stdlib 冲突（官方警告），zip 会多背 1.8MB 的 stdlib + `annotations.jar`。
   运行时 stdlib 由 IDE 核心 `lib/3rd-party-rt.jar` 提供（已实测 2022.1 沙箱 PASS；注意 2022.1 **没有** `kotlin-stdlib.jar`，
   别被 `plugins/Kotlin/lib/` 下的 `kotlinc/lib/` 误导）。
-- **包级文件（pluginIcon.svg / pluginIcon_dark.svg / THIRD-PARTY-LICENSES.txt）必须位于插件目录根部**。
+- **包级文件（pluginIcon.svg / pluginIcon_dark.svg / THIRD-PARTY-LICENSES.txt / LICENSE）必须位于插件目录根部**。
   IPGP 1.x 会把 `src/main/resources` 全部打进 `lib/*.jar`（图标落到 jar 内 `META-INF/`），Marketplace 识别不到；
   正确做法是往 `buildPlugin`（它本身就是 `Zip`，IPGP 已 `into(pluginName)`）追加：
   ```kotlin
   tasks.named<BuildPluginTask>("buildPlugin") {
       from("src/main/resources") { include("pluginIcon.svg", "pluginIcon_dark.svg", "THIRD-PARTY-LICENSES.txt") }
+      from(rootProject.file("LICENSE"))   // Apache-2.0 全文，在项目根、不在 resources 里
   }
   ```
   （挂到 `prepareSandbox` 上**无效**——它的 copy 目标是 `destinationDir/pluginName`，`from` 会落到 `plugins/` 根。）
-- **第三方库必须声明许可**：`LGoodDatePicker`（MIT）用于过滤栏日期控件，其 jar 内**没有** LICENSE 文件，
-  故许可全文放在 `src/main/resources/THIRD-PARTY-LICENSES.txt` 并随包分发。
-- 上架元数据（`<vendor>` 的 email/url、`<change-notes>`、`pluginIcon*.svg`）已就绪，见 `plugin.xml`。
+- **第三方许可声明必须随包分发**：本插件**零分发第三方组件**（第五轮起移除 LGoodDatePicker），
+  仍保留 `src/main/resources/THIRD-PARTY-LICENSES.txt` 作为正式声明（列明「不分发」结论、
+  运行时依赖的 IDE 侧组件、商标声明），并随插件包分发。
+- **上架元数据**（`<vendor>` 的 email/url、`<category>`、`<change-notes>`、`pluginIcon*.svg`）已就绪，见 `plugin.xml`。
+  ⚠️ `<change-notes>` 必须与**当前入口**一致：入口已于 D1 ② 改为常驻标签页，早期文本
+  （"an Enhance Merge link injected into ... Working Copies Information"）**已过期**，
+  会直接显示在 Marketplace 页面上——改入口时务必同步改它。
+  ⚠️ **禁止**在 `plugin.xml` 里写 `<license>` / `<support>` / `<privacy-policy>`：
+  IDEA 2022.1 **不识别**这些元素（2026-11-01 沙箱实测：`SEVERE - PluginManager - Unknown element: license`
+  与 `Unknown element: support`），IDEA 对未知 plugin.xml 元素直接让插件**加载失败**——
+  而本项目 `since-build=221`，必须兼容 2022.1。许可证 / 支持渠道 / 隐私声明改为
+  ①写进 `<description>`；②在 Marketplace 后台对应字段填写。
+  ⚠️ `<category>` 在 2022.1 可用（实测无告警）。
 
 ## SVN API 用法（复用公开 API，勿用内部类）
 
 - 取日志（**直连仓库、分页、非全量、只含源分支自身修订**）：
-  `SvnCommittedChangesProvider.getCommittedChanges(settings, location, size + 1)` → `List<SvnChangeList>`。
+  `SvnCommittedChangesProvider.getCommittedChanges(settings, location, size + N)` → `List<SvnChangeList>`。
   游标用 `ChangeBrowserSettings.CHANGE_BEFORE` + `USE_CHANGE_BEFORE_FILTER`（首屏 = -1 不设过滤；
-  翻页游标 = 上一页末条修订号），`size=100`（与 TortoiseSVN `NumberOfLogs` 默认值一致），
-  多取一条判定「是否还有更多」。底层 `getCommittedChangesImpl(..., includeMergedRevisions = false, ...)`
+  翻页游标 = 上一页末条修订号），`size=100`（与 TortoiseSVN `NumberOfLogs` 默认值一致）。
+  ⚠️ **`CHANGE_BEFORE` 的区间含端点**（2026-11-01 实测更正）：带游标请求时，游标那条修订会**重复**出现。
+  故翻页时 **N = 2**（`EXTRA_FOR_CURSOR_BOUNDARY`）：请求 `size + 2` 并**剔除 `number == cursor`** 的条目，
+  「是否取完」按**剔除后**的条数判定（≤ size 即取完，对齐原版 `MergeCalculatorTask.getChangeLists`
+  的 `size + 2` + `revisionToExclude` 剔除 + `changeLists.size() < size + 1`）。
+  **不剔除的后果**：重复条目占掉 `take(size)` 名额 → 一条更新的新修订被挤掉，且游标已越过它 →
+  该修订永久不可见（静默丢修订）。底层 `getCommittedChangesImpl(..., includeMergedRevisions = false, ...)`
   → `HistoryClient.doLog(...)`，**不走缓存**（未碰 `CachedProvider` / `LoadedRevisionsCache`）；
   **禁止** `limit=0` 全量拉取。失败须可重试，关闭返回上一步且无副作用。
+  ⚠️ **游标与「已取完」标志只在本次调用正常返回时提交**（事务性）：被取消时游标不动，
+  否则「数据被丢弃、游标却已越过」会静默丢一整批修订。
 - **⛔ 禁止使用 `getCommittedChangesWithMergedRevisons`（原版口径，includeMergedRevisons=true）**：
   它经 `SvnMergeSourceTracker` + `MergeSourceHierarchyBuilder` 把**合并源分支**的修订也产出
   （=「同一需求在别的分支上的副本」，路径相对源分支、提交说明与目标分支那条重复）。这些副本：
@@ -342,10 +376,12 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
 - **已删除**（D1 ② 入口唯一化）：`wcinfo/WcInfoLinkInjector`、`EnhanceMergeAction`
 
-单测（2026-10-30）：`LogFilterTest`(8) + `LogPageLoaderTest`(14) + `QuantitySelectionTest`(9) +
+单测（2026-11-01）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
 `EnhanceMergeBundleTest`(3) + `BundleKeysTest`(6) + `EnhanceMergeSettingsTest`(4) +
-`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) = **55**（第九轮 + 「+N」按钮复刻原版后）。
-（旧文档里的 12 / 39 / 53 / 54 / 55 / 60 / 63 均已落后，以 **55** 为准；README 的「测试」章节已同步。）
+`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) = **58**
+（第九轮 + 「+N」按钮复刻原版后为 55；2026-11-01 上架前审查新增 3 例：
+翻页边界剔除重复条且不丢新修订 / 取消后游标不推进 / 取数期间 reset 时半截数据作废）。
+（旧文档里的 12 / 39 / 53 / 54 / 55 / 60 / 63 均已落后，以 **58** 为准；README 的「测试」章节已同步。）
 
 ### 2026-10-21 原版化 + 显式搜索框（第五轮 · **已实施**）
 

@@ -1,0 +1,68 @@
+SVN Enhance Merge — Third-Party Licences
+=========================================
+
+This plugin (SVN Enhance Merge, plugin id `com.weixf.svn.mergeenhance`) is
+distributed under the Apache License, Version 2.0 (see the `LICENSE` file at
+the root of this artifact).
+
+本插件以 Apache License 2.0 授权发布（完整许可文本见本插件包根目录的 `LICENSE` 文件）。
+
+
+1. No third-party component is redistributed
+--------------------------------------------
+
+As of version 1.0.0 this plugin ships **no** third-party source code or
+binary artifact inside its distribution archive. The plugin consists only of
+its own Kotlin classes, its own resource files (message bundles and icons)
+and the metadata files required by the IntelliJ Platform.
+
+自 1.0.0 起，本插件**不再分发任何第三方组件**：安装包内只有本插件自身的 Kotlin
+字节码、资源文件（文案包与图标）以及 IntelliJ Platform 要求的元数据文件。
+
+Earlier development builds vendored `com.github.lgooddatepicker:LGoodDatePicker`
+(MIT). That dependency and the corresponding feature (a date-range filter for
+the revision log) were removed before the first public release, so no
+third-party licence obligations remain for the distributed artifact.
+
+早期开发版本曾内置 `com.github.lgooddatepicker:LGoodDatePicker`（MIT 许可），
+该依赖连同其「日期区间过滤」功能已在首个公开版本前整体移除，因此正式分发的
+安装包不再背负任何第三方许可义务。
+
+
+2. Components used at runtime, provided by the IDE
+--------------------------------------------------
+
+The plugin **calls** the following components at runtime through their public
+API. None of them is bundled with, redistributed by, or linked into this
+artifact; they are provided by the user's IDE installation.
+
+本插件在运行时通过**公开 API 调用**下列组件。它们都不包含在本插件的安装包内，
+而是由用户自己的 IDE 安装提供。
+
+| Component                                  | Provider                          | Usage                                                        |
+|--------------------------------------------|-----------------------------------|--------------------------------------------------------------|
+| IntelliJ Platform SDK                     | JetBrains s.r.o.                  | Compile-time dependency; runtime provided by the IDE         |
+| Subversion plugin (`svn4idea`)             | JetBrains s.r.o.                  | Branch picker, revision log, merge engine — **public API only**, no code copied |
+| Kotlin standard library                   | JetBrains s.r.o. (IDE core)       | Provided by the IDE at runtime (`lib/3rd-party-rt.jar`); not packaged with this plugin |
+
+The Subversion plugin is bundled with IntelliJ IDEA 2022.1 – 2025.x. Starting
+with IntelliJ IDEA 2026.x, JetBrains no longer bundles it; it must be installed
+from the Marketplace, and this plugin declares `<depends>Subversion</depends>`
+so that it is loaded after (and only together with) the Subversion plugin.
+
+IntelliJ IDEA 2022.1 – 2025.x 自带 Subversion 插件；2026.x 起 JetBrains 不再随发行版分发该插件，
+需从 Marketplace 安装。本插件通过 `<depends>Subversion</depends>` 声明依赖，确保它在 Subversion
+插件之后加载、且仅在 Subversion 插件存在时加载。
+
+
+3. Trademarks
+-------------
+
+"IntelliJ IDEA", "JetBrains", "Subversion" and "TortoiseSVN" are trademarks of
+their respective owners. They are referenced only to describe compatibility and
+the origin of the reused APIs; this plugin is not affiliated with or endorsed by
+JetBrains s.r.o. or the TortoiseSVN project.
+
+“IntelliJ IDEA”、“JetBrains”、“Subversion”、“TortoiseSVN” 均为各自权利人的商标；
+此处仅用于说明兼容性与所复用 API 的来源，本插件与 JetBrains s.r.o. 及 TortoiseSVN 项目
+无隶属或背书关系。

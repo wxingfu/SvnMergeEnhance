@@ -27,6 +27,17 @@
       仓库主页：https://wxingfu.github.io/
     -->
     <vendor email="wxingfu@alu.uestc.edu.cn" url="https://wxingfu.github.io/">wxingfu</vendor>
+
+    <!--
+      Marketplace 元数据：
+      - <category>：Marketplace / IDE 插件市场的分类展示（VCS = 版本控制）。2022.1 接受该元素。
+      ⚠️ **不要**加 <license> / <support> / <privacy-policy>：它们在 IDEA 2022.1 上**不被识别**
+      （沙箱实测：`SEVERE - PluginManager - Unknown element: license` / `Unknown element: support`），
+      未知元素会让插件**直接加载失败**（本项目 since-build=221，必须兼容 2022.1）。
+      故许可证与支持渠道信息写在下方 <description> 里，并在 Marketplace 后台对应字段填写：
+      许可证 = Apache-2.0（SPDX）、支持渠道 = GitHub Issues + 邮箱、隐私 = No data collected。
+    -->
+    <category>VCS</category>
     <!--
       description / change-notes 采用「英文在前、中文在后」的双语排版：
       plugin.xml 只能有一份描述（Marketplace 上架时也以它为初始内容），
@@ -64,9 +75,32 @@
   <li>界面提供英文与简体中文，随 IDE 语言包自动切换。</li>
 </ul>
 
+<p><b>Requirements / 前置条件：</b>the JetBrains <b>Subversion</b> plugin. It is bundled with
+IntelliJ IDEA 2022.1 – 2025.x. <b>Starting with IntelliJ IDEA 2026.x, JetBrains no longer bundles
+Subversion</b> — install the official Subversion plugin from the Marketplace first, otherwise this
+plugin cannot be loaded (it declares <i>&lt;depends&gt;Subversion&lt;/depends&gt;</i>).
+<br/><b>前置条件：</b>需要 JetBrains 官方 <b>Subversion</b> 插件。IntelliJ IDEA 2022.1 – 2025.x 自带；
+<b>2026.x 起 JetBrains 不再随发行版分发 Subversion</b>，需先从 Marketplace 安装官方 Subversion 插件，
+否则本插件无法加载（本插件声明了 <i>&lt;depends&gt;Subversion&lt;/depends&gt;</i>）。</p>
+
+<p><b>Privacy / 隐私：</b>this plugin <b>does not collect, transmit or store any personal data</b>.
+It only talks to your Subversion repository through the IDE's own Subversion integration; no
+telemetry, no analytics, no network calls to JetBrains or anywhere else. The only settings it
+persists are the two options you can change in <i>Settings | Version Control | SVN Enhance Merge</i>.
+<br/><b>隐私：</b>本插件<b>不收集、不传输、不存储任何个人数据</b>，不含任何遥测或统计代码；
+它仅通过 IDE 自带的 Subversion 集成与你的 SVN 仓库通信，除此之外不发起任何网络请求。
+唯一持久化的内容是 <i>设置 | 版本控制 | SVN 增强合并</i> 里的两个选项。</p>
+
+<p><b>Support / 支持：</b>source code, changelog and issue tracker:
+<a href="https://github.com/wxingfu/SvnMergeEnhance">github.com/wxingfu/SvnMergeEnhance</a> ·
+homepage: <a href="https://wxingfu.github.io/">wxingfu.github.io</a> ·
+e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
+<br/><b>支持：</b>源码、变更日志与问题反馈：<a href="https://github.com/wxingfu/SvnMergeEnhance">github.com/wxingfu/SvnMergeEnhance</a>；
+主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>；邮箱：wxingfu@alu.uestc.edu.cn。</p>
+
 <p><b>Source code / 源码：</b>
-<a href="https://github.com/wxingfu/SvnMergeEnhance">github.com/wxingfu/SvnMergeEnhance</a> (MIT License).
-Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.</p>
+<a href="https://github.com/wxingfu/SvnMergeEnhance">github.com/wxingfu/SvnMergeEnhance</a>
+(Apache License 2.0). HomePage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.</p>
     ]]></description>
 
     <change-notes><![CDATA[
@@ -74,24 +108,31 @@ Homepage / 主页：<a href="https://wxingfu.github.io/">wxingfu.github.io</a>.<
 <h4>1.0.0</h4>
 <ul>
   <li>Initial release.</li>
-  <li>Entry point: an "Enhance Merge..." link injected into
-      <i>Version Controls | Subversion Working Copies Information</i>, right below "Merge From...".</li>
-  <li>Revision picking in the built-in dialog's layout, with a keyword search box on top of
-      the list, paging (+100 / +500) and per-revision merge status.</li>
-  <li>Settings page under <i>Settings | Version Control | SVN Enhance Merge</i>.</li>
-  <li>English and Simplified Chinese UI.</li>
+  <li>Entry point: a permanent <b>Enhance Merge</b> tab in the <i>Version Control</i> tool window,
+      next to <i>Subversion Working Copies Information</i>. It lists the working copies of the project
+      and offers <i>Cleanup</i> and <i>Merge From…</i> for each of them.</li>
+  <li>Revision picking in the built-in dialog's layout, with a keyword search box on top of the
+      list, paging (+100 / +500), inline diff (Ctrl+D) and per-revision merge status.</li>
+  <li>Only revisions of the <b>source branch itself</b> are listed. The built-in dialog also lists
+      copies of revisions that were merged into that branch; they do not exist on the target branch
+      and cannot be merged into it, so they are left out here.</li>
+  <li>Settings page under <i>Settings | Version Control | SVN Enhance Merge</i>
+      (revisions per page, merge status calculation).</li>
+  <li>English and Simplified Chinese UI, following the IDE language pack.</li>
 </ul>
 
 <h3>中文</h3>
 <h4>1.0.0</h4>
 <ul>
   <li>首个版本。</li>
-  <li>入口：在<i>版本控制 | Subversion 工作副本信息</i>面板的「Merge From…」下方注入
-      「Enhance Merge…」链接。</li>
+  <li>入口：<i>版本控制</i>工具窗中的常驻 <b>增强合并</b> 标签页（与「Subversion 工作副本信息」并列），
+      列出项目的工作副本，每个工作副本提供「清理」与「合并自…」。</li>
   <li>逐版本勾选合并：沿用原版对话框布局，表格上方新增关键词搜索过滤框，
-      分页加载（+100 / +500），以及每个版本的合并状态图标。</li>
-  <li>设置页：<i>Settings | Version Control | SVN Enhance Merge</i>。</li>
-  <li>界面提供英文与简体中文。</li>
+      分页加载（+100 / +500），内联差异（Ctrl+D），以及每个版本的合并状态图标。</li>
+  <li>清单只含<b>源分支自身</b>的版本。内置对话框还会列出「合并进该分支的版本副本」，
+      它们在目标分支上并不存在、无法合并不进去，本插件不再列出这类条目。</li>
+  <li>设置页：<i>设置 | 版本控制 | SVN 增强合并</i>（每页版本数、是否计算合并状态）。</li>
+  <li>界面提供英文与简体中文，随 IDE 语言包自动切换。</li>
 </ul>
     ]]></change-notes>
 

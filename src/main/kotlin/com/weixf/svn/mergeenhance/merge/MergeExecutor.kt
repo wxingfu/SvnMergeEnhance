@@ -4,6 +4,8 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.ui.Messages
+import com.weixf.svn.mergeenhance.EnhanceMergeBundle
 import org.jetbrains.idea.svn.history.SvnChangeList
 import org.jetbrains.idea.svn.integrate.ChangeListsMergerFactory
 import org.jetbrains.idea.svn.integrate.LocalChangesPromptTask
@@ -45,16 +47,42 @@ object MergeExecutor {
         // 修订选择对话框重复。LocalChangesPromptTask 只从宿主取 MergeContext/Interaction，
         // 是复刻前置步骤的最小代价。
         val quickMerge = QuickMerge(context, QuickMergeInteractionImpl(context))
-        val callback = Runnable { merge(context, selected) }
+        // ⚠️ 回调**必须回到 EDT**（2026-11-01 修复 P1-3）：
+        // `LocalChangesPromptTask` 在「搁置(shelve)」分支里是在**后台任务**中调用本回调的，
+        // 而 `merge()` 会执行 `saveAllDocuments()` 与 `SvnIntegrateChangesTask.queue()`——
+        // 两者都要求在 EDT 调用。
+        val callback = Runnable {
+            ApplicationManager.getApplication().invokeLater(
+                {
+                    if (context.project.isDisposed) return@invokeLater
+                    merge(context, selected)
+                },
+                ModalityState.any(),
+                context.project.disposed,
+            )
+        }
 
         ApplicationManager.getApplication().invokeLater(
             {
+                // ⚠️ 过期判定必须写在 **lambda 内**：平台的「项目已关闭」过期条件只覆盖排队期间，
+                // 排队结束到真正执行之间项目仍可能被关闭 —— 那时不该再弹模态对话框。
+                if (context.project.isDisposed) return@invokeLater
                 try {
                     LocalChangesPromptTask(quickMerge, selected, callback).run()
                 } catch (e: Exception) {
                     // 兜底：前置提示失败不应让整个流程无声终止（原版此处的异常同样只进日志）。
                     // 用 warn 而非 error：这是可恢复的前置步骤失败，不该按"插件内部错误"上报。
                     LOG.warn("Failed to run local changes prompt before merge", e)
+                    // 但**必须让用户知道合并没有执行**（否则表现为"点了合并，什么也没发生"）。
+                    Messages.showErrorDialog(
+                        context.project,
+                        EnhanceMergeBundle.message(
+                            "error.merge.local.changes.failed",
+                            // `orEmpty().ifBlank {}`：异常消息可能为空，用异常类名兜底
+                            e.message.orEmpty().ifBlank { e.javaClass.simpleName },
+                        ),
+                        EnhanceMergeBundle.message("title.enhance.merge"),
+                    )
                 }
             },
             // 官方要求：invokeLater 必须显式给 ModalityState（默认状态在模态框关闭动画期间

@@ -4,6 +4,7 @@ import com.weixf.svn.mergeenhance.log.LogFilter
 import com.weixf.svn.mergeenhance.log.LogPageLoader
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.vcs.versionBrowser.ChangeBrowserSettings
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -290,5 +291,91 @@ class LogPageLoaderTest {
 
         verify(exactly = 0) { provider.getCommittedChangesWithMergedRevisons(any(), any(), any(), any()) }
         verify(atLeast = 1) { provider.getCommittedChanges(any(), any(), any()) }
+    }
+
+    // -------------------------------------------------- 翻页边界（P0-1）
+
+    /**
+     * 回归看守（P0-1，2026-11-01）：**「CHANGE_BEFORE」区间含端点**，
+     * 游标那条修订会在下一页**重复出现**。
+     *
+     * 原版对此有明确处理（`MergeCalculatorTask.getChangeLists`）：请求 `size + 2` 并**显式剔除**
+     * `revisionToExclude`。不剔除的后果是**静默丢修订**：重复条目占掉 `take(size)` 的一个名额，
+     * 于是一条**更新的新修订**被挤掉，而游标已越过它 → 那条修订此后既不显示、也不进合并集合。
+     *
+     * 本测试用 mock provider 复刻服务端语义（按 `CHANGE_BEFORE` 过滤、**含端点**、降序、限条数）。
+     */
+    @Test
+    fun `cursor boundary duplicate is dropped and no newer revision is lost`() {
+        val provider = mockk<SvnCommittedChangesProvider>(relaxed = true)
+        val vcs = mockk<SvnVcs>(relaxed = true)
+        every { vcs.committedChangesProvider } returns provider
+        val ctx = mockk<MergeContext>(relaxed = true)
+        every { ctx.vcs } returns vcs
+        every { ctx.sourceUrl } returns mockk<Url>(relaxed = true)
+
+        // 仓库里共 20 条修订：r30 … r11（降序）
+        val repository = (30L downTo 11L).toList()
+        val requestedSizes = mutableListOf<Int>()
+        every { provider.getCommittedChanges(any(), any(), any()) } answers {
+            val maxCount = thirdArg<Int>()
+            requestedSizes += maxCount
+            val settings = firstArg<ChangeBrowserSettings>()
+            // 「CHANGE_BEFORE」区间**含端点**：before 本身也在结果里
+            val before = if (settings.USE_CHANGE_BEFORE_FILTER) settings.CHANGE_BEFORE.toLong() else Long.MAX_VALUE
+            repository.filter { it <= before }.take(maxCount).map { list(it) }
+        }
+
+        val loader = LogPageLoader(ctx)
+        val first = loader.loadNextPageRaw(10, loader.snapshot())
+        assertEquals((30L downTo 21L).toList(), first.map { it.number })
+
+        val second = loader.loadNextPageRaw(10, loader.snapshot())
+        // 第二页必须**全是新修订**：既不含重复的 r21，也不丢 r20 / r11
+        assertEquals((20L downTo 11L).toList(), second.map { it.number })
+
+        // 首屏多取 1 条（判定还有更多）；翻页多取 2 条（1 条判定 + 1 条用于剔除游标条目）
+        assertEquals(listOf(11, 12), requestedSizes)
+    }
+
+    // -------------------------------------------------- 取消/世代号与游标（P1-2）
+
+    /**
+     * 回归看守（P1-2，2026-11-01）：取消发生在「数据已取回、尚未交付」之间时，
+     * **游标不得推进**。
+     *
+     * 原实现边取边写字段：取消后该批数据被调用方丢弃、游标却已越过它 →
+     * 那批修订永远取不回来（静默丢修订）。现在游标与结束标志在**正常返回前**才提交。
+     */
+    @Test
+    fun `cancellation does not advance the cursor`() {
+        val loader = LogPageLoader(context, cursorSource = { _, _ -> page(30, 29, 28) to false })
+        val indicator = mockk<ProgressIndicator>()
+        every { indicator.checkCanceled() } throws ProcessCanceledException()
+
+        assertFailsWith<ProcessCanceledException> {
+            loader.loadNextPageRaw(10, loader.snapshot(), indicator)
+        }
+        // 游标未推进 → 用户重试时这一批仍会被取回
+        assertEquals(-1L, loader.cursor)
+        assertFalse(loader.allLoaded)
+    }
+
+    /**
+     * 回归看守：取数期间发生 `reset`（世代号变化）时，本轮**返回空**——
+     * 半截旧数据不得混进新缓冲（与类文档承诺一致）。
+     */
+    @Test
+    fun `a generation change during paging discards the half fetched page`() {
+        lateinit var loader: LogPageLoader
+        loader = LogPageLoader(context, cursorSource = { _, _ ->
+            val fetched = page(30, 29, 28)
+            loader.reset() // 模拟取数期间发生了 reset
+            fetched to false
+        })
+
+        val result = loader.loadNextPageRaw(10, loader.snapshot())
+        assertTrue(result.isEmpty())
+        assertEquals(-1L, loader.cursor)
     }
 }

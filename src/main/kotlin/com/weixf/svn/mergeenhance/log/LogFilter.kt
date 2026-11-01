@@ -38,20 +38,22 @@ data class LogFilter(
     val hasSearchText: Boolean get() = searchText.isNotBlank()
 
     /**
-     * 搜索词的 token 列表（**缓存**）。
+     * 搜索词的 token 列表（**已转小写**，缓存）。
      *
      * 为什么必须缓存：判定每条修订都会用到，而扫描上万条时分词开销与匹配开销同量级。
-     * 分词结果只取决于不可变的 [searchText]，解析一次即可；`lazy` 默认同步，多线程访问安全。
+     * 分词与小写化结果只取决于不可变的 [searchText]，解析一次即可；`lazy` 默认同步，多线程访问安全。
      */
     private val tokens: List<String> by lazy {
-        searchText.trim().split(WHITESPACE).filter { it.isNotEmpty() }
+        searchText.trim().split(WHITESPACE).filter { it.isNotEmpty() }.map { it.lowercase() }
     }
 
     /** 单条日志是否命中。空搜索词恒真。 */
     fun matches(list: SvnChangeList): Boolean {
         if (tokens.isEmpty()) return true
+        // ⚠️ 拼接串只小写化**一次**（2026-11-01 修复 P2-6）：此前每条修订重建拼接串，
+        // 且每个 token 都要再 `lowercase()` 一遍 —— 上万条修订 + 频繁改关键字时是纯粹的浪费。
         val haystack = buildCombined(list).lowercase()
-        return tokens.all { haystack.contains(it.lowercase()) }
+        return tokens.all { haystack.contains(it) }
     }
 
     /**

@@ -42,6 +42,10 @@ class RevisionSelectDialog(
         setResizable(true)
         setOKButtonText(EnhanceMergeBundle.message("button.merge.selected"))
         init()
+        // ⚠️ 面板是在 `init()` **之前**构造的，它自己的 `updateStatus()` 那时尚未跑过，
+        // 于是 OK（Merge Selected）按钮保持平台默认的「可用」——空选时点它毫无反应。
+        // 这里在 `init()` 之后补一次状态同步：没有勾选就禁用，有勾选才可用。
+        panel.syncSelectionState()
     }
 
     override fun createCenterPanel(): JComponent = panel.component

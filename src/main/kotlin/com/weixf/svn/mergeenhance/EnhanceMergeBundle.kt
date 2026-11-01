@@ -58,12 +58,29 @@ object EnhanceMergeBundle {
     /** 平台是否装载了语言包；为 false 时强制英文，避免与英文 IDE 界面不一致。 */
     private val languagePackInstalled: Boolean by lazy {
         val active = findLanguageBundle() != null
-        val platformLocale = runCatching { DynamicBundle.getLocale() }.getOrNull()
+        val platformLocale = readPlatformLocale()
         LOG.info(
             "EnhanceMerge i18n: languagePack=$active, platformLocale=$platformLocale, " +
                 "defaultLocale=${Locale.getDefault()}, selected=${if (active) platformLocale else Locale.ROOT}"
         )
         active
+    }
+
+    /**
+     * 读平台 locale（读不到即返回 null）。
+     *
+     * ⚠️ **不用 `runCatching`**（2026-11-01 修复 P2-2）：它等价于 `catch (Throwable)`，
+     * 会吞掉 `ProcessCanceledException` / `OutOfMemoryError` / `NoClassDefFoundError`，
+     * 违反项目「禁 catch (Throwable)」的约束。这里按项目规范分两段捕获。
+     */
+    private fun readPlatformLocale(): Locale? = try {
+        DynamicBundle.getLocale()
+    } catch (e: ReflectiveOperationException) {
+        null
+    } catch (e: LinkageError) {
+        // 类在但二进制不兼容（平台重构了签名）
+        LOG.warn("DynamicBundle.getLocale() is not usable on this IDE build", e)
+        null
     }
 
     /**
@@ -139,7 +156,15 @@ object EnhanceMergeBundle {
         "languagePack=$languagePackInstalled, bundleLocale=${bundle.locale}"
 
     fun message(key: String, vararg params: Any?): String {
-        val pattern = bundle.getString(key)
+        // ⚠️ 缺 key 不让异常冒出去（2026-11-01 修复 P2-2）：`message()` 会在 Swing 事件回调里被调用，
+        // `MissingResourceException` 冒出去会变成插件内部错误日志，用户看到的是界面半途出错。
+        // 回退显示 key 本身，一眼能看出漏了哪个文案。
+        val pattern = try {
+            bundle.getString(key)
+        } catch (e: MissingResourceException) {
+            LOG.warn("Missing bundle key: $key")
+            return key
+        }
         return if (params.isEmpty()) pattern else MessageFormat.format(pattern, *params)
     }
 

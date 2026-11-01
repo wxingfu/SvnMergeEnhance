@@ -76,8 +76,18 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
     @Volatile
     private var refreshTask: Future<*>? = null
 
+    /**
+     * 刷新世代号（2026-11-01 修复 P1-7）。
+     *
+     * 连点「刷新」会并发跑多次 svn 枚举，**先发起的旧任务可能后完成** → 旧快照覆盖新快照
+     * （列表回退到旧的工作副本集合）。与 `LogPageLoader` 的世代号同构：
+     * 回调里比对世代号，不是最新一次的结果直接丢弃。
+     */
+    @Volatile
+    private var refreshGeneration = 0L
+
     /** 工作副本信息块的纵向容器（对齐原版 `VerticalLayout(8)` 间距 + `empty(2, 4)` 边框）。 */
-    private val listContainer = JPanel(VerticalLayout(8)).apply {
+    private val listContainer = JPanel(VerticalLayout(JBUI.scale(8))).apply {
         border = JBUI.Borders.empty(2, 4)
     }
 
@@ -116,6 +126,9 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
     /** 后台枚举工作副本并回 EDT 填充（`allWcInfos` 可能触发 svn 探测，不得在 EDT 同步执行）。 */
     private fun refresh() {
         if (project.isDisposed) return
+        // 取消上一次未完成的枚举：避免并发探测同一批工作副本（也避免旧任务覆盖新结果）
+        refreshTask?.cancel(true)
+        val generation = ++refreshGeneration
         refreshTask = ApplicationManager.getApplication().executeOnPooledThread {
             val infos = try {
                 SvnVcs.getInstance(project)?.allWcInfos ?: emptyList()
@@ -125,6 +138,8 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
             }
             ApplicationManager.getApplication().invokeLater(
                 {
+                    // 世代号比对：只有**最新一次**刷新的结果才生效（否则旧快照会覆盖新快照）
+                    if (generation != refreshGeneration) return@invokeLater
                     if (isDisposed || project.isDisposed) return@invokeLater
                     applyWcInfos(infos)
                 },

@@ -1,5 +1,6 @@
 package com.weixf.svn.mergeenhance.flow
 
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
@@ -12,6 +13,7 @@ import com.weixf.svn.mergeenhance.merge.MergeExecutor
 import com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings
 import com.weixf.svn.mergeenhance.ui.RevisionSelectDialog
 import org.jetbrains.idea.svn.SvnUtil
+import org.jetbrains.idea.svn.commandLine.SvnBindException
 import org.jetbrains.idea.svn.SvnVcs
 import org.jetbrains.idea.svn.api.Url
 import org.jetbrains.idea.svn.branchConfig.SelectBranchPopup
@@ -52,6 +54,8 @@ import java.awt.Component
  * （作为标签页「Merge From…」的后续步骤，非注入入口，仍合规）。
  */
 object MergeFlow {
+
+    private val LOG = Logger.getInstance(MergeFlow::class.java)
 
     /** 弹窗标题（T9.4：不再硬编码，走本地化 bundle）。 */
     private val TITLE: String
@@ -187,7 +191,26 @@ object MergeFlow {
 
             // appendPath(relative, false)：false = 不对 relative 做 URL 编码
             // （relative 本身已是仓库路径片段，二次编码会把空格/中文变成 %XX 而匹配不上）
-            val sourceUrl = url.appendPath(relative, false)
+            //
+            // ⚠️ `appendPath` 会抛 `SvnBindException`（2026-11-01 修复 P1-4）：
+            // 此前未捕获 → 异常一路冒到平台的分支弹窗回调里，表现为 IDE 内部错误对话框。
+            // 原版 `CopiesPanel.mergeFrom` 对同一段就是 try/catch `SvnBindException` + 用户友好提示。
+            val sourceUrl = try {
+                url.appendPath(relative, false)
+            } catch (e: SvnBindException) {
+                LOG.warn("Failed to build the merge source URL for branch ${url.toDecodedString()}", e)
+                Messages.showErrorDialog(
+                    project,
+                    EnhanceMergeBundle.message(
+                        "error.cannot.build.branch.url",
+                        url.toDecodedString(),
+                        // `orEmpty().ifBlank {}`：异常消息可能为空，用异常类名兜底（不写 `?:`，编译器会判恒真告警）
+                        e.message.orEmpty().ifBlank { e.javaClass.simpleName },
+                    ),
+                    TITLE,
+                )
+                return
+            }
             // 自身层级守卫：源与目标是同一条分支（互为祖先）时合并没有意义，
             // SVN 还会因"merge from self"直接报错，提前拦下更友好。
             if (isSameHierarchy(sourceUrl, wcInfo.url)) {

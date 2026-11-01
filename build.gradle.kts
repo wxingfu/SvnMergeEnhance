@@ -130,8 +130,12 @@ tasks.withType<PatchPluginXmlTask> {
 // `buildPlugin` 任务本身就是 Zip（IPGP 已 `into(pluginName)`），直接往它追加文件即可落到正确位置。
 tasks.named<BuildPluginTask>("buildPlugin") {
     from("src/main/resources") {
-        include("pluginIcon.svg", "pluginIcon_dark.svg")
+        // 图标：Marketplace 的插件图标（浅色 / 深色主题两套）
+        // 第三方许可声明：随包分发（Marketplace 与许可合规检查会看）
+        include("pluginIcon.svg", "pluginIcon_dark.svg", "THIRD-PARTY-LICENSES.txt")
     }
+    // 许可证全文（Apache-2.0）：LICENSE 在项目根目录、不在 resources 里，需单独复制一份到插件包根
+    from(rootProject.file("LICENSE"))
 }
 
 // ------------------------------------------------------------ 官方 API 兼容性校验
