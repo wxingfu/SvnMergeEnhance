@@ -49,6 +49,15 @@
 - 界面文案英文 + 简体中文，按 IDE 语言包状态自动切换。
 
 ### 变更
+- **本地化改为零反射**（2026-11-01）：`EnhanceMergeBundle` 不再用反射探测"是否装了语言包"，
+  改用**公开 API** `DynamicBundle.getLocale()`（2022.1 与 2026.2.3 均为 `public static`，
+  返回**语言包语言**而非操作系统语言）。本插件由此**彻底零反射**（源码里已无 `reflect` 字样）。
+  locale 决策抽成两个**纯函数**（`selectLocale` / `isLocaleAccepted`），可单测、不依赖平台状态。
+  ⚠️ 顺带修好一个静默缺陷：实测 2026.2.3 上 `DynamicBundle.findLanguageBundle()` **已被移除**、
+  `com.intellij.l10n.LocalizationUtil` 里**根本没有**该方法 → 旧的反射两条路都不通，
+  **2026.x 上"语言包感知"其实已失效（恒走英文）**；现改为公开 API 后一并修好。
+  两个既有坑位保持不变：英文一律用 `Locale.ROOT` 请求（避 JDK 回退到系统 locale）、
+  取到 bundle 后校验语言以防串语种。
 - **构建：关闭 IPGP 自更新检查**（2026-11-01）：`gradle.properties` 增加
   `org.jetbrains.intellij.buildFeature.selfUpdateCheck=false`。该检查只为提示 IPGP 是否有新版本，
   却在网络受限 / GitHub 限流 / 代理拦截重定向时让构建**在 `initializeIntelliJPlugin` 阶段直接失败**

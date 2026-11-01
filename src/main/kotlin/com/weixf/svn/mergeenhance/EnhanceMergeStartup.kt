@@ -8,7 +8,7 @@ import com.intellij.openapi.startup.StartupActivity
  * 启动期诊断（第六轮，D1 ② 后新增）。
  *
  * 唯一职责：在插件加载时打印一条 `EnhanceMerge i18n` 诊断日志——
- * - 记录实际生效的语言包 / locale（排查「装中文包后界面语言不对」用）；
+ * - 记录 IDE 当前语言与实际生效的文案包语言（排查"装中文语言包后界面语言不对"用）；
  * - 同时作为 `scripts/verify-plugin.ps1` 的**就绪信号**：该脚本以「日志里出现 `EnhanceMerge i18n`」
  *   判定插件已加载完成，比「进程存在」更可靠（能捕获启动期异常）。
  *

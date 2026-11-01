@@ -16,144 +16,120 @@ import java.util.ResourceBundle
  * 复用原对话框（`SelectBranchPopup`、`SvnIntegrateChangesTask` 等）的文案由 IDEA 自带 bundle
  * 提供，无需在此维护。
  *
- * ## 为什么不用「直接继承 DynamicBundle」的默认行为
+ * ## 语言判定：**零反射**，只用公开 API
  *
- * `com.intellij.DynamicBundle` 解析资源时用的是 **`Locale.getDefault()`（操作系统语言）**，
- * 而 **IDEA 2022.1 没有 UI 语言包机制**（`since-build=221`，界面恒英文）。
- * 实测（中文 Windows + 英文 IDE）：直接提供 `_zh_CN` 资源会解析成中文，出现
- * 「英文 IDE 界面里只有本插件弹中文」的不一致（svn4idea 自带 bundle 也没有 `_zh_CN`，所以它是英文）。
+ * 2026-11-01 改造：此前靠**反射**探测"平台是否装了语言包"
+ * （`DynamicBundle.findLanguageBundle()` / `com.intellij.l10n.LocalizationUtil.findLanguageBundle()`），
+ * 再据此决定用 `_zh_CN` 还是英文基包。两条问题：
  *
- * ## 适配策略（支持后续安装中文/其它语言插件）
+ * 1. **反射是 Marketplace 审核的高风险项**（本项目已因此做到"零反射"，不应再留唯一一处）；
+ * 2. **2026.x 上两条反射路径都不通**（实测 `javap`）：
+ *    - `DynamicBundle.findLanguageBundle()` 在 2026.2.3 **已被移除**；
+ *    - `com.intellij.l10n.LocalizationUtil` 在 2026.2.3 **根本没有** `findLanguageBundle` 方法
+ *      （只有 `getDefaultLocale()` / `getLocale(boolean)` / `getLocaleOrNullForDefault()`）。
+ *    → `findLanguageBundle()` 恒返回 null → `languagePackInstalled=false`
+ *    → **2026.x 上"语言包感知"其实已静默失效，恒走英文基包**。
  *
- * 用平台扩展点判断"是否真的装了语言包"：
- * - `findLanguageBundle()` 非 null ⇒ 已装语言包，使用 `DynamicBundle.getLocale()`
- *   选具体语言（装了中文包 → `_zh_CN`，装了日文包 → `_ja`，没有对应文件则自动回退英文基包）；
- * - 为 null ⇒ **强制英文**，与英文 IDE 界面保持一致。
+ * 现在的做法：**直接读 IDE 当前界面语言**——`DynamicBundle.getLocale()`。
+ * 该方法在 **2022.1 与 2026.2.3 都是 `public static`**（javap 核对），且两端语义一致：
+ * - 2022.1：`Locale.forLanguageTag(ourLangTag)`（`ourLangTag` = 平台语言包语言标签）；
+ * - 2026.2.3：`LocalizationUtil.INSTANCE.getLocale()`。
+ * 即"装了中文语言包的 IDE → 中文；否则 → 英文"，**无需反射、无需猜测**。
  *
- * 这样：没装语言包时永远不会"冒中文"；装了语言包后自动跟随，无需改代码。
- * 自带 UTF-8 解码（IntelliJ 的 properties 是 UTF-8，`ResourceBundle` 默认按 ISO-8859-1 读）。
+ * ## 两个必须保留的坑位处理
  *
- * ## `findLanguageBundle()` 的跨版本桥接（2026.x 搬迁）
+ * 1. **英文一律用 [Locale.ROOT] 请求**：JDK `ResourceBundle.getBundle` 的候选链里含
+ *    "系统默认 locale"——中文 Windows 上请求 `Locale.ENGLISH` 仍会命中 `_zh_CN`
+ *    （JDK 的经典 fallback）。只有 `Locale.ROOT` 的候选链是纯净的（只有基包）。
+ * 2. **回退要校验语言**：装了日文语言包但本插件没有 `_ja` 时，JDK 会 fallback 到系统 locale
+ *    → 拿到 `_zh_CN`（串语种）。故取到 bundle 后校验 `found.locale.language == target.language`，
+ *    不符则回退英文基包。
  *
- * 该方法在 2026.x 从 `DynamicBundle`（静态）搬到了 `com.intellij.l10n.LocalizationUtil`（实例），
- * 且**旧入口被直接移除**（官方 Plugin Verifier 对 IC-2026.2.3 报 `NoSuchMethodError`）。
- * 直接用旧入口编译出的字节码在 2026.2.3 上一调就崩，故按"新平台优先"反射两条路径；
- * 两条都不可用、或确实没有语言包时返回 null。返回值只用于 `!= null` 判定，不接触其类型。
+ * ## 为什么不用平台的 `<resource-bundle>`
+ *
+ * 声明 `<resource-bundle>` 会让平台改用 `DynamicBundle` 的 `Locale.getDefault()`（**操作系统语言**）
+ * 解析，在"中文系统 + 英文 IDE（2022.1 无语言包机制，界面恒英文）"时会出现
+ * 「英文 IDE 界面里只有本插件是中文」的不一致（svn4idea 自带 bundle 也没有 `_zh_CN`，它是英文）。
+ * 故本插件**自行判定 locale**，不声明 `<resource-bundle>`、也不在 EP 上写 `key`/`displayName`。
  */
 object EnhanceMergeBundle {
 
     private const val BASE_NAME = "messages.EnhanceMergeBundle"
 
-    /** 2026.x 起承载 `findLanguageBundle()` 的 Kotlin object 类名。 */
-    private const val LOCALIZATION_UTIL_CLASS = "com.intellij.l10n.LocalizationUtil"
-
-    /** Kotlin object 的单例字段名。 */
-    private const val INSTANCE_FIELD = "INSTANCE"
-
-    /** 两个平台版本上同名的探测方法名。 */
-    private const val FIND_LANGUAGE_BUNDLE_METHOD = "findLanguageBundle"
+    /** 基准（英文）语言：IDE 语言为它、或无法判定时，一律使用英文基包。 */
+    private const val BASE_LANGUAGE = "en"
 
     private val LOG = Logger.getInstance(EnhanceMergeBundle::class.java)
 
-    /** 平台是否装载了语言包；为 false 时强制英文，避免与英文 IDE 界面不一致。 */
-    private val languagePackInstalled: Boolean by lazy {
-        val active = findLanguageBundle() != null
-        val platformLocale = readPlatformLocale()
-        LOG.info(
-            "EnhanceMerge i18n: languagePack=$active, platformLocale=$platformLocale, " +
-                "defaultLocale=${Locale.getDefault()}, selected=${if (active) platformLocale else Locale.ROOT}"
-        )
-        active
-    }
-
-    /**
-     * 读平台 locale（读不到即返回 null）。
-     *
-     * ⚠️ **不用 `runCatching`**（2026-11-01 修复 P2-2）：它等价于 `catch (Throwable)`，
-     * 会吞掉 `ProcessCanceledException` / `OutOfMemoryError` / `NoClassDefFoundError`，
-     * 违反项目「禁 catch (Throwable)」的约束。这里按项目规范分两段捕获。
-     */
-    private fun readPlatformLocale(): Locale? = try {
-        DynamicBundle.getLocale()
-    } catch (e: ReflectiveOperationException) {
-        null
-    } catch (e: LinkageError) {
-        // 类在但二进制不兼容（平台重构了签名）
-        LOG.warn("DynamicBundle.getLocale() is not usable on this IDE build", e)
-        null
-    }
-
-    /**
-     * 探测平台语言包（详见类文档「跨版本桥接」）：
-     * - 2026.x：`com.intellij.l10n.LocalizationUtil.INSTANCE.findLanguageBundle()`；
-     * - 2022.1 ~ 2025.x：`DynamicBundle.findLanguageBundle()`（静态）。
-     *
-     * 返回 null = 两条路都不可用，或确实没有安装语言包（两种情形对本类的含义相同：强制英文）。
-     */
-    private fun findLanguageBundle(): Any? {
-        val fromNewApi = try {
-            val utilClass = Class.forName(LOCALIZATION_UTIL_CLASS)
-            val util = utilClass.getDeclaredField(INSTANCE_FIELD).apply { isAccessible = true }.get(null)
-            utilClass.getMethod(FIND_LANGUAGE_BUNDLE_METHOD).invoke(util)
-        } catch (e: ReflectiveOperationException) {
-            null
-        } catch (e: LinkageError) {
-            // 类在但二进制不兼容（如平台重构了字段/方法签名）
-            LOG.warn("LocalizationUtil is present but not usable on this IDE build", e)
-            null
-        }
-        if (fromNewApi != null) return fromNewApi
-
-        return try {
-            DynamicBundle::class.java.getMethod(FIND_LANGUAGE_BUNDLE_METHOD).invoke(null)
-        } catch (e: ReflectiveOperationException) {
-            null
-        } catch (e: LinkageError) {
-            LOG.warn("DynamicBundle.findLanguageBundle is not usable on this IDE build", e)
-            null
-        }
-    }
-
-    private val bundle: ResourceBundle by lazy { loadBundle() }
+    /** 生效的文案包（懒加载：首次用到时才读平台语言，避免在类初始化期触碰平台 API）。 */
+    private val bundle: ResourceBundle by lazy { loadBundleFor(currentIdeLocale()) }
 
     /**
      * 供日期控件等第三方组件使用的有效 locale：与自绘界面文案保持一致
-     * （未装语言包时强制英文；装了语言包跟随平台语言）。
+     * （未装语言包时为英文；装了语言包跟随 IDE 语言）。
      */
     val locale: Locale
         get() = bundle.locale.let { if (it == Locale.ROOT) Locale.ENGLISH else it }
 
     /**
-     * 两步解析，规避 JDK 的一个反直觉行为（已用离线探针实测）：
+     * IDE 当前界面语言（语言包语言）。
      *
-     * ```
-     * getBundle(base, Locale.ENGLISH, loader, control)  默认 locale=zh_CN  -> 返回 _zh_CN（中文）
-     * getBundle(base, Locale.ROOT,    loader, control)  默认 locale=zh_CN  -> 返回基包（英文）
-     * ```
-     *
-     * 即：请求英文时 JDK 仍可能通过"默认 locale 回退"拿到中文资源。因此：
-     * 1. 未装语言包 → 直接用 `Locale.ROOT`（基包 = 英文）；
-     * 2. 装了语言包 → 用平台 locale 精确匹配，**若拿到的语言与目标语言不符**（说明发生了回退），
-     *    也退回基包，避免"日文 IDE 显示中文"这类串语种。
+     * 用的是**公开 API**（`DynamicBundle.getLocale()`，2022.1 ~ 2026.x 均有），
+     * 全程零反射。理论上它不会抛异常，但 2022.1 的实现会对未初始化的语言标签插入 null 检查
+     * （`Locale.forLanguageTag(null)` → NPE），故兜一个 `RuntimeException` → 退回基包（英文）。
      */
-    private fun loadBundle(): ResourceBundle {
-        val loader = EnhanceMergeBundle::class.java.classLoader
-        val desired = if (languagePackInstalled) DynamicBundle.getLocale() else Locale.ROOT
-        val base = { ResourceBundle.getBundle(BASE_NAME, Locale.ROOT, loader, Utf8Control) }
+    private fun currentIdeLocale(): Locale = try {
+        DynamicBundle.getLocale()
+    } catch (e: RuntimeException) {
+        LOG.warn("DynamicBundle.getLocale() is not usable on this IDE build, falling back to the base bundle", e)
+        Locale.ROOT
+    }
 
+    /**
+     * 纯函数：IDE 语言 → 向 `ResourceBundle` 请求的 locale。
+     *
+     * - 英文（`en`）或无法判定（`Locale.ROOT`，`language` 为空）→ [Locale.ROOT]（**只可能命中基包**）；
+     * - 其它语言 → 原样请求（命中 `_zh_CN` 等变体）。
+     *
+     * 为什么英文不能用 `Locale.ENGLISH` 请求：JDK 的候选链含系统默认 locale，
+     * 中文 Windows 上会命中 `_zh_CN`（串语种）。详见类文档「坑位处理 1」。
+     */
+    internal fun selectLocale(ideLocale: Locale): Locale {
+        val language = ideLocale.language
+        return if (language.isEmpty() || language == BASE_LANGUAGE) Locale.ROOT else ideLocale
+    }
+
+    /**
+     * 纯函数：取到的 bundle 语言是否就是请求的语言。
+     *
+     * 用于拦截 JDK 的"fallback 到系统 locale"——请求 `ja` 而系统是 `zh_CN` 时，
+     * JDK 会返回 `_zh_CN`（语言不符 → 串语种），此时应回退英文基包。
+     */
+    internal fun isLocaleAccepted(found: Locale, target: Locale): Boolean =
+        found.language == target.language
+
+    /**
+     * 按给定 IDE 语言加载文案包（**测试入口**：可注入确定的 locale，不必依赖平台状态）。
+     *
+     * @param ideLocale IDE 当前界面语言（语言包语言）
+     */
+    internal fun loadBundleFor(ideLocale: Locale): ResourceBundle {
+        val loader = EnhanceMergeBundle::class.java.classLoader
+        val target = selectLocale(ideLocale)
+        val base = { ResourceBundle.getBundle(BASE_NAME, Locale.ROOT, loader, Utf8Control) }
         return try {
-            val found = ResourceBundle.getBundle(BASE_NAME, desired, loader, Utf8Control)
-            if (desired == Locale.ROOT || found.locale.language == desired.language) found else base()
-        } catch (t: MissingResourceException) {
+            val found = ResourceBundle.getBundle(BASE_NAME, target, loader, Utf8Control)
+            if (isLocaleAccepted(found.locale, target)) found else base()
+        } catch (e: MissingResourceException) {
             // 指定语言的资源不存在（装了语言包但本插件没有对应翻译）→ 退回英文基包
-            LOG.warn("Failed to load EnhanceMerge bundle for $desired, falling back to base bundle", t)
+            LOG.warn("Failed to load EnhanceMerge bundle for $target, falling back to base bundle", e)
             base()
         }
     }
 
     /** 触发初始化并返回本地化判定结果，便于启动时在日志中确认实际生效的语言。 */
     fun localizationDiagnostics(): String =
-        "languagePack=$languagePackInstalled, bundleLocale=${bundle.locale}"
+        "ideLocale=${currentIdeLocale()}, bundleLocale=${bundle.locale}"
 
     fun message(key: String, vararg params: Any?): String {
         // ⚠️ 缺 key 不让异常冒出去（2026-11-01 修复 P2-2）：`message()` 会在 Swing 事件回调里被调用，

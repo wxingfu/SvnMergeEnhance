@@ -37,7 +37,7 @@
 - 经官方 `changesViewContentEP` 在 VCS 工具窗注册**常驻标签页**，与「Subversion Working Copies Information」并列；
 - 标签页列出项目全部**工作副本**（每个工作副本一个信息块：本地路径 / URL / Format / Depth / Working copy root），
   块内提供 **Cleanup**（复用原版 `CleanupWorker`）与**加粗的「Merge From…」链接**（对齐原版 WC Info 面板）；
-- 仅在项目启用 Subversion VCS 时可见；不注册任何菜单/右键项、不反射注入任何其它插件（纯公开 API、零轮询）。
+- 仅在项目启用 Subversion VCS 时可见；不注册任何菜单/右键项、**零反射**（纯公开 API，不注入任何其它插件、零轮询）。
 
 ### 完整合并流程
 
@@ -185,8 +185,12 @@ Enhance Merge 标签页（工作副本信息块列表）
 
 4. **合并执行**（`MergeExecutor`）与 `QuickMerge.merge(List)` 等价：`saveAllDocuments()` → `LocalChangesPromptTask`（QuickMerge 仅作宿主，不触发其合并流程）→ `SvnIntegrateChangesTask(...).queue()`。**不写 `SvnConfiguration`**，不影响原版「Merge From」行为。
 
-5. **本地化**：自绘文案全部走 `messages/EnhanceMergeBundle`，按平台是否装载语言包切换英文基包 / `_zh_CN`；
-   设置页标题**刻意不写** EP 的 `key`/`displayName`（那会让平台按 `Locale.getDefault()` 解析，
+5. **本地化（零反射）**：自绘文案全部走 `messages/EnhanceMergeBundle`，按 **IDE 当前界面语言**选文案——
+   公开 API `DynamicBundle.getLocale()`（2022.1 ~ 2026.x 均为 `public static`，返回**语言包语言**而非系统语言）：
+   装了中文语言包 → `_zh_CN`，否则 → 英文基包。两个坑位已在代码里处理：
+   ①英文一律用 `Locale.ROOT` 请求（否则中文 Windows 上 JDK 会把 `_zh_CN` 命中 → 英文 IDE 里出现中文）；
+   ②取到 bundle 后校验语言是否匹配（装了日文语言包而无 `_ja` 时不回退成中文）。
+   设置页标题**刻意不写** EP 的 `key`/`displayName`（那会让平台按 `Locale.getDefault()`＝**操作系统语言**解析，
    在「中文系统 + 英文 IDE」上显示中文），改由 `Configurable.getDisplayName()` 提供，与对话框语言判定统一。
 
 ### 与原插件的关系
@@ -210,7 +214,7 @@ SvnMergeEnhance/
 │   ├── verify-plugin.ps1                # Windows 回归验证（切版本启沙箱 + 扫插件异常日志）
 │   └── verify-plugin.sh                 # Unix 版（同一逻辑）
 ├── src/main/kotlin/com/weixf/svn/mergeenhance/
-│   ├── EnhanceMergeBundle.kt             # 语言包感知的文案 bundle（英文基包 / _zh_CN）
+│   ├── EnhanceMergeBundle.kt             # 文案 bundle（按 IDE 当前语言选英文基包 / _zh_CN，零反射）
 │   ├── EnhanceMergeStartup.kt            # 启动期 i18n 日志（verify 就绪信号）
 │   ├── flow/MergeFlow.kt                # 流程编排：分支弹窗（SelectBranchPopup）→ URL 换算 → 模态修订选择
 │   ├── log/LogPageLoader.kt             # 修订日志分页加载（游标单通道 + 世代号防串 + 翻页边界剔除）
@@ -311,7 +315,7 @@ SvnMergeEnhance/
 
 ## 测试
 
-### 纯逻辑单元测试（58 用例，不连仓库）
+### 纯逻辑单元测试（63 用例，不连仓库）
 
 ```bash
 ./gradlew.bat test
@@ -324,7 +328,7 @@ SvnMergeEnhance/
 | `QuantitySelectionTest` | 9 | 全不选起点的增删清、全选起点的排除与恢复、`areAllSelected()` 的原版语义（起点为全选时恒为 `true`，本插件 `selectedChangeLists()` 依赖该行为走排除集） |
 | `RevisionSelectionTest` | 7 | 勾选集合语义：以修订号为准、不受过滤视图影响、稀疏增删 |
 | `RevisionAccumulatorTest` | 4 | 已加载全集累积：跨页去重、**批内重复修订号全部保留**（SVN 合并修订按路径展开） |
-| `EnhanceMergeBundleTest` | 3 | 文案 bundle：基包 / `_zh_CN` / 缺键回退 |
+| `EnhanceMergeBundleTest` | 8 | locale 判定（**零反射**）：英文/无法判定 → 英文基包（`Locale.ROOT`）、中文 → `_zh_CN`、未知语言 → 回退基包不串语种、语言不符即拒绝、locale 纯函数、诊断字段 |
 | `BundleKeysTest` | 6 | 文案 key：中英包集合一致、取值非空、搜索框 key、标签页 key、合并方式弹窗 key、**「+N」按钮文案含 `{0}` 占位符** |
 | `EnhanceMergeSettingsTest` | 4 | 设置持久化：pageSize 夹取、旧配置（含已删字段）兼容、开关往返 |
 
@@ -400,11 +404,14 @@ deprecation 会把构建卡死）。
    运行时由 IDEA 核心 `lib/3rd-party-rt.jar` 提供。已实测 2022.1 沙箱加载正常
    （`gradlew verifyOnIde -PideaVersion=2022.1` → PASS）。
 4. **2026.x 的两处平台变化（已适配）**：
-   - `DynamicBundle.findLanguageBundle()` 被移除（搬到 `com.intellij.l10n.LocalizationUtil`）。
-     未适配前 Plugin Verifier 报 `NoSuchMethodError`，现改为「新平台优先」的反射桥接，
-     两个版本都能正确判断是否装了语言包（`EnhanceMergeBundle`）。
-     ⚠️ 这是本插件**唯一**的反射调用，且只用于读取平台语言包状态，
-     **不反射注入任何其它插件**（上架审核关注的高风险行为，本插件完全没有）。
+   - **本地化改为零反射**：此前靠**反射**探测"是否装了语言包"
+     （`DynamicBundle.findLanguageBundle()` / `com.intellij.l10n.LocalizationUtil.findLanguageBundle()`）。
+     实测（`javap`）发现 **2026.2.3 上这两条路径都不存在** —— `findLanguageBundle()` 已被移除，
+     `LocalizationUtil` 里根本没有这个方法 → 旧实现**在 2026.x 上恒返回 null**，
+     语言包感知其实已静默失效（恒走英文）。
+     现改为**公开 API** `DynamicBundle.getLocale()`：它在 2022.1 与 2026.2.3 都是 `public static`
+     且语义一致（返回**语言包语言**，不是操作系统语言）→ 本插件现在**零反射**，
+     且 2026.x 上的语言跟随也一并修好。
    - **SVN 插件不再内置**：Plugin Verifier 实测 2026.2.3 对应的是 Marketplace 上的
      `Subversion 262.10968.211`。本插件声明 `<depends>Subversion</depends>`，
      因此在 2026.x 上需先安装官方 Subversion 插件（见「环境要求」）。

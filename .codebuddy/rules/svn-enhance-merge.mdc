@@ -172,9 +172,10 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 
 ### 代码规范（官方插件开发规范，2026-10-18 全量审查后固化）
 
-**反射是本项目唯一被允许的“非公开 API”**，且只剩**一处**（`EnhanceMergeBundle` 跨版本取语言包）；
-其余一律走公开 API + `JBUI`/`UIUtil`/平台组件。
-（反射注入链接的 `WcInfoLinkInjector` 已按 D1 ② 删除——入口唯一化为官方 `changesViewContentEP` 标签页。）
+**本项目现为「零反射」**：全部走公开 API（`JBUI`/`UIUtil`/平台组件），源码里连 `reflect` 字样都不剩。
+（历史：曾用**反射**探测平台语言包状态（`EnhanceMergeBundle`），2026-11-01 已改为公开 API
+`DynamicBundle.getLocale()`——它在 2022.1 与 2026.2.3 都是 `public static`，语义一致；
+反射注入链接的 `WcInfoLinkInjector` 已按 D1 ② 删除——入口唯一化为官方 `changesViewContentEP` 标签页。）
 
 - **禁用 `javax.swing.Timer`**（官方明令）：一律用 `com.intellij.util.Alarm`，且必须给父 `Disposable`
   （`Alarm(ThreadToUse.SWING_THREAD, disposable)`）；Swing Timer 不受 Disposer 管、关闭后仍会回调。
@@ -184,14 +185,17 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   发丝线 `JBUI.Borders.customLine(color, 1)` **不缩放是平台惯例**，不必改。
 - **主题色**：只用 `UIUtil.*` / `JBColor.border()` 等主题入口，**禁硬编码颜色**
   （原先的 `JBColor.RED` 已换成 `UIUtil.getErrorForeground()`）。
-- **禁 `catch (Throwable)`**：反射路径分 `ReflectiveOperationException`（方法/字段不存在）
-  与 `LinkageError`（类在但签名不兼容）两段；正则只捕获 `IllegalArgumentException`。
+- **禁 `catch (Throwable)`**：只捕获具体异常类型（正则只捕获 `IllegalArgumentException`；
+  平台 API 调用失败按 `ReflectiveOperationException` / `LinkageError` / `RuntimeException` 分段）。
+  ⚠️ 2026-11-01 起本项目**已无反射路径**，原「反射分两段捕获」的约定随 `EnhanceMergeBundle`
+  改造一并作废（`catch (Throwable)` 仍然禁止）。
 - **`invokeLater` 必须显式带 `ModalityState` + 过期条件**（`project.disposed`）。
 - **`LOG.error` 只用于真正的内部错误**；可恢复的失败一律 `LOG.warn`（否则会触发插件上报/blame）。
 - **用户可见文本（含标点）一律进文案包**：状态栏 `r{x} – r{y}`、`[已合并]` 的方括号都不能在代码里拼。
   动态 key（`"filter.field." + field.id`）必须由 `BundleKeysTest` 双向对齐守护。
 - **`Configurable` 的 EP 上不要写 `key` / `displayName`**：`ConfigurableWrapper.getDisplayName()`
-  里 EP 优先，会绕过本插件“语言包感知”的 `EnhanceMergeBundle`（中文系统 + 英文 IDE 会显示中文）。
+  里 EP 优先，会绕过本插件自己的 locale 判定（`EnhanceMergeBundle` 按 **IDE 当前语言**选文案；
+  而平台那套按 `Locale.getDefault()`＝**操作系统语言**解析，中文系统 + 英文 IDE 会显示中文）。
   两个都不写即回退到 `Configurable.getDisplayName()`；同理无需 `<resource-bundle>`。
 - **进度条**：总量未知时用 `isIndeterminate = true` + `text2` 显示计数，
   **不要**用取模/递增伪造 `fraction`（官方不允许编造进度百分比）。
@@ -302,9 +306,9 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - **唯一入口**：官方 `changesViewContentEP` 注册的**常驻标签页**「Enhance Merge」
   （VCS 工具窗内，与「Subversion Working Copies Information」并列）。
   - 可见性谓词用官方写法 `ProjectLevelVcsManager.checkVcsIsActive(SvnVcs.VCS_NAME)`；
-  - 标签名由 `DisplayNameSupplier` 本地化（走 `EnhanceMergeBundle`，语言包感知）——
+  - 标签名由 `DisplayNameSupplier` 本地化（走 `EnhanceMergeBundle`，按 **IDE 当前语言**选文案）——
     EP 上刻意**不写** `displayName` 字面量（避免绕过语言判定）。
-  - 纯公开 API、**零反射注入其它插件**、零轮询、零 `<action>` 注册。
+  - 纯公开 API、**零反射**（含零反射注入其它插件）、零轮询、零 `<action>` 注册。
 - **⛔ 反射注入入口已按 D1 ② 删除**（`wcinfo/WcInfoLinkInjector` / `EnhanceMergeAction`）：
   原入口靠反射调 `WorkingCopyInfoPanel.getInfo()` + 2s 定时器扫组件树注入链接，
   属官方规范与上架审核的实质风险点（反射注入其它插件）。随之删除的还有整条已无调用方的模态链路
@@ -312,18 +316,25 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   入口实现类：`tab/EnhanceMergeTabContent`（ChangesViewContentProvider）+ `tab/EnhanceMergePanel`（主体）
   + `tab/WcInfoPanel`（工作副本信息块）+ `EnhanceMergeStartup`（仅打印一行 i18n 日志，作为 verify 就绪信号）。
 - 用户可见字符串走 `messages/*.properties` bundle，不硬编码。
-- **本地化必须语言包感知**（`EnhanceMergeBundle` 已实现，勿改回 `extends DynamicBundle` 默认解析）：
-  - 语言包探测：`findLanguageBundle()` 非 null ⇒ 已装语言包，用 `DynamicBundle.getLocale()` 精确匹配；
-  - 否则用 **`Locale.ROOT`** 取基包（英文）。
-  - **⚠️ 该方法在 2026.x 已搬家**：`DynamicBundle.findLanguageBundle()`（静态）被移除，搬到
-    `com.intellij.l10n.LocalizationUtil.findLanguageBundle()`（Kotlin object 实例方法）。
-    直接调旧入口编译出的字节码在 2026.2.3 上 `NoSuchMethodError`（Plugin Verifier 实证）。
-    `EnhanceMergeBundle.findLanguageBundle()` 已改为「新平台优先」的**反射桥接**（两条路都反射，
-    都不通就当没装语言包）—— 因为要同时支持 221~262，只能反射，勿"优化"回直接调用。
-    回归由 `EnhanceMergeBundleTest`（3 个用例，走 2022.1 classpath 的回退路径）钉住。
-  - **JDK 陷阱（实测）**：在 `Locale.getDefault()=zh_CN` 的机器上，
-    `getBundle(base, Locale.ENGLISH, …)` 仍会返回 `_zh_CN`；只有 `Locale.ROOT` 稳定拿基包。
+- **本地化按「IDE 当前界面语言」判定，零反射**（`EnhanceMergeBundle` 已实现，勿改回 `extends DynamicBundle` 默认解析）：
+  - 语言来源：**公开 API `DynamicBundle.getLocale()`** —— 2022.1 与 2026.2.3 都是 `public static`
+    且语义一致（2022.1 = `Locale.forLanguageTag(ourLangTag)`；2026.2.3 = `LocalizationUtil.INSTANCE.getLocale()`），
+    返回的是**IDE 语言包语言**，不是操作系统 locale。装了中文语言包 → 中文；否则 → 英文。
+  - **英文一律用 `Locale.ROOT` 请求**（`selectLocale()` 纯函数）：
+    IDE 语言为 `en` 或无法判定（`Locale.ROOT`）→ 转 `Locale.ROOT`，**只可能命中基包**。
+  - **⚠️ JDK 陷阱（实测）**：在 `Locale.getDefault()=zh_CN` 的机器上，
+    `getBundle(base, Locale.ENGLISH, …)` 仍会返回 `_zh_CN`（候选链含系统默认 locale）；
+    只有 `Locale.ROOT` 稳定拿基包。
+  - **⚠️ 防串语种**（`isLocaleAccepted()` 纯函数）：装了日文语言包但本插件没有 `_ja` 时，
+    JDK 会 fallback 到系统 locale → 拿到 `_zh_CN`；故取到 bundle 后必须校验
+    `found.locale.language == target.language`，不符则回退英文基包。
   - properties 必须按 **UTF-8** 解码（`ResourceBundle` 默认 ISO-8859-1）。
+  - 回归由 `EnhanceMergeBundleTest`（8 个用例，注入 locale 覆盖「英文基包 / 中文包 / 未知语言回退 /
+    串语种拒绝 / 诊断字段」）钉住；`selectLocale` 与 `isLocaleAccepted` 是**纯函数**，不依赖平台状态。
+  - **历史（勿回退）**：此前靠反射探测语言包（`DynamicBundle.findLanguageBundle()` /
+    `com.intellij.l10n.LocalizationUtil.findLanguageBundle()`）。2026-11-01 实测发现
+    **2026.2.3 两条路径都不存在**（`findLanguageBundle` 已被移除，`LocalizationUtil` 里根本没这个方法）
+    → 旧实现**在 2026.x 上恒返回 null**，语言包感知已静默失效（恒英文）。现改为公开 API 后一并修好。
 
 ## 线程与生命周期（官方规范，硬要求）
 
@@ -376,12 +387,14 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
   `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
 - **已删除**（D1 ② 入口唯一化）：`wcinfo/WcInfoLinkInjector`、`EnhanceMergeAction`
 
-单测（2026-11-01）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
-`EnhanceMergeBundleTest`(3) + `BundleKeysTest`(6) + `EnhanceMergeSettingsTest`(4) +
-`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) = **58**
+单测（2026-11-01，零反射改造后）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
+`EnhanceMergeBundleTest`(8) + `BundleKeysTest`(6) + `EnhanceMergeSettingsTest`(4) +
+`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) = **63**
 （第九轮 + 「+N」按钮复刻原版后为 55；2026-11-01 上架前审查新增 3 例：
-翻页边界剔除重复条且不丢新修订 / 取消后游标不推进 / 取数期间 reset 时半截数据作废）。
-（旧文档里的 12 / 39 / 53 / 54 / 55 / 60 / 63 均已落后，以 **58** 为准；README 的「测试」章节已同步。）
+翻页边界剔除重复条且不丢新修订 / 取消后游标不推进 / 取数期间 reset 时半截数据作废；
+同日零反射改造把 `EnhanceMergeBundleTest` 由 3 例扩到 8 例：英文基包 / 中文包 / 未知语言回退 /
+串语种拒绝 / locale 纯函数 / 诊断字段）。
+（旧文档里的 12 / 39 / 53 / 54 / 55 / 58 / 60 均已落后，以 **63** 为准；README 的「测试」章节已同步。）
 
 ### 2026-10-21 原版化 + 显式搜索框（第五轮 · **已实施**）
 
