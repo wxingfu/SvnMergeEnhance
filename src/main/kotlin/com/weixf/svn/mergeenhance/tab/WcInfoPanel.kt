@@ -23,10 +23,16 @@ import javax.swing.event.HyperlinkEvent
  * 行结构与原版 `UiBuilder` 一一对应：
  * ```
  * path（加粗，跨 3 列） / URL: / Format: / Depth: / [嵌套副本类型] / [Working copy root]
- *   / Cleanup（仅 1.7+） / Merge From…（加粗）
+ *   / Cleanup（仅 1.7+）/ Configure Branches / Merge From…（加粗）
  * ```
- * 「Cleanup」「Merge From…」是表内真正的 HTML 链接（`href` + `description` 携带 action 名），
- * 点击由 [hyperlinkUpdate] 捕获。
+ * 「Cleanup」「Configure Branches」「Merge From…」是表内真正的 HTML 链接（`href` +
+ * `description` 携带 action 名），点击由 [hyperlinkUpdate] 捕获。
+ *
+ * ⚠️ **必须清掉 Swing 的默认 MarginBorder**（见 [init]）：`HtmlPanel` 继承自 `JEditorPane`，
+ * 默认带 `BasicBorders.MarginBorder(3,3,3,3)`；原版 svn4idea 在 `CopiesPanel.updateList()`
+ * 里显式 `setBorder(null)` 抹掉了它。不清掉会让**整块内容比原版右移/下移 3px**——
+ * 在两个标签页之间切换时肉眼可见「跳位」（2026-11-01 像素级实测：原版标签列起点 x=49、
+ * 本插件 x=51，纵向同样差 2px）。
  *
  * ⚠️ **数据必须通过 [setWcInfo] 注入而不是构造参数**：Kotlin 的属性初始化在 `HtmlPanel`
  * 构造之后，而 `HtmlPanel` 构造期间就会调用 [getBody]，用构造参数会导致读到未初始化的字段。
@@ -40,6 +46,24 @@ internal class WcInfoPanel : HtmlPanel() {
 
     /** 点击「Cleanup」时回调（由 `EnhanceMergePanel` 绑定）。 */
     var onCleanup: (() -> Unit)? = null
+
+    /** 点击「Configure Branches」时回调（由 `EnhanceMergePanel` 绑定）。 */
+    var onConfigureBranches: (() -> Unit)? = null
+
+    init {
+        // 对齐原版 `CopiesPanel.updateList()`：`infoPanel.setBorder(null)` + `setFocusable(true)`
+        border = null
+        isFocusable = true
+    }
+
+    /**
+     * 主题（LaF）切换会重新安装 Swing 的默认 MarginBorder → 再清一次，
+     * 保证任何时候都与原版对齐（原版只在创建时清一次，切主题后会漂 3px，属原版缺陷，不照抄）。
+     */
+    override fun updateUI() {
+        super.updateUI()
+        border = null
+    }
 
     /** 注入工作副本信息并刷新 HTML（对齐原版 `setInfo(...)` + `update()`）。 */
     fun setWcInfo(info: WCInfo) {
@@ -63,9 +87,13 @@ internal class WcInfoPanel : HtmlPanel() {
             append(depthRow(info))
             append(nestedTypeRow(info))
             append(isRootRow(info))
-            append(cleanupRow(info))
-            // 与原版一致：出错的工作副本不提供合并入口
-            if (!info.hasError()) append(mergeFromRow())
+            // 与原版 `UiBuilder.build()` 一致：出错的工作副本**不提供任何动作**
+            // （Cleanup / Configure Branches / Merge From… 全部不渲染）
+            if (!info.hasError()) {
+                append(cleanupRow(info))
+                append(configureBranchesRow())
+                append(mergeFromRow())
+            }
         }.wrapWith("table").toString()
     }
 
@@ -74,6 +102,7 @@ internal class WcInfoPanel : HtmlPanel() {
         when (e.description) {
             ACTION_MERGE_FROM -> onMergeFrom?.invoke()
             ACTION_CLEANUP -> onCleanup?.invoke()
+            ACTION_CONFIGURE_BRANCHES -> onConfigureBranches?.invoke()
         }
     }
 
@@ -127,6 +156,17 @@ internal class WcInfoPanel : HtmlPanel() {
         return tr().child(td(3).child(actionLink(ACTION_CLEANUP, EnhanceMergeBundle.message("wc.cleanup"))))
     }
 
+    /**
+     * 「Configure Branches」行（对齐原版 `configureBranchesRow()`）。
+     *
+     * 动作本身复用**原版公开的** `BranchConfigurationDialog.configureBranches(project, root)`
+     * （2022.1 与最新版 svn4idea 均为 public static），不自行实现分支配置 UI。
+     */
+    private fun configureBranchesRow(): HtmlChunk =
+        tr().child(
+            td(3).child(actionLink(ACTION_CONFIGURE_BRANCHES, EnhanceMergeBundle.message("wc.configure.branches")))
+        )
+
     private fun mergeFromRow(): HtmlChunk =
         tr().child(
             td(3).child(
@@ -155,5 +195,8 @@ internal class WcInfoPanel : HtmlPanel() {
 
         /** 「Cleanup」链接携带的 action 名（与原版 `CopiesPanel.CLEANUP` 同名）。 */
         const val ACTION_CLEANUP = "CLEANUP"
+
+        /** 「Configure Branches」链接携带的 action 名（与原版 `CopiesPanel.CONFIGURE_BRANCHES` 同名）。 */
+        const val ACTION_CONFIGURE_BRANCHES = "CONFIGURE_BRANCHES"
     }
 }

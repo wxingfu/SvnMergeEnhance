@@ -22,6 +22,7 @@ import com.weixf.svn.mergeenhance.flow.MergeFlow
 import com.weixf.svn.mergeenhance.ui.MergeVariantDialog
 import org.jetbrains.idea.svn.SvnVcs
 import org.jetbrains.idea.svn.actions.CleanupWorker
+import org.jetbrains.idea.svn.branchConfig.BranchConfigurationDialog
 import org.jetbrains.idea.svn.dialogs.WCInfo
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -50,9 +51,10 @@ import java.util.concurrent.Future
  *
  * ## 与原版 WC Info 面板的关系
  *
- * 并存，不替换：本标签页提供「工作副本信息块 + Cleanup + Merge From…（走 Enhance Merge）」；
- * `Configure Branches`（依赖 internal 的 `SvnBranchConfigurationManager`）与 `Properties`
- * 仍由原版 WC Info 面板承担（决策项 D2，不复刻）。
+ * 并存，不替换：本标签页提供「工作副本信息块 + Cleanup + Configure Branches + Merge From…（走 Enhance Merge）」；
+ * `Properties` 等其余原版面板专有项仍由原版 WC Info 面板承担。
+ * （2026-11-01 起「Configure Branches」也已复刻：原版用的是**公开**的
+ * `BranchConfigurationDialog.configureBranches(project, root)`，并无「只能依赖 internal 类」的限制。）
  *
  * ## 生命周期
  *
@@ -174,6 +176,7 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
         val panel = WcInfoPanel()
         panel.setWcInfo(wcInfo)
         panel.onCleanup = { cleanupWorkingCopy(wcInfo) }
+        panel.onConfigureBranches = { configureBranches(wcInfo) }
         panel.onMergeFrom = {
             MergeFlow.selectBranch(project, wcInfo, panel) { context ->
                 when (MergeVariantDialog(project).showDialog()) {
@@ -183,6 +186,25 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
             }
         }
         return panel
+    }
+
+    /**
+     * 配置分支：复用**原版公开的** `BranchConfigurationDialog.configureBranches(project, root)`
+     * （2022.1 与最新版 svn4idea 均为 public static），弹出的就是内置插件自己的分支配置对话框。
+     *
+     * 根无效（目录被删除/移动）时给出提示并中止，与原版 `checkRoot` 的守卫等价。
+     */
+    private fun configureBranches(wcInfo: WCInfo) {
+        val root = wcInfo.rootInfo.virtualFile
+        if (!root.isValid) {
+            Messages.showWarningDialog(
+                project,
+                EnhanceMergeBundle.message("error.invalid.working.copy.root", wcInfo.path),
+                EnhanceMergeBundle.message("wc.configure.branches"),
+            )
+            return
+        }
+        BranchConfigurationDialog.configureBranches(project, root)
     }
 
     /**
