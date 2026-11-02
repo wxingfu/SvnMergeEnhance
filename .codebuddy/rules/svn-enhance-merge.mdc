@@ -193,21 +193,24 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - **`LOG.error` 只用于真正的内部错误**；可恢复的失败一律 `LOG.warn`（否则会触发插件上报/blame）。
 - **用户可见文本（含标点）一律进文案包**：状态栏 `r{x} – r{y}`、`[已合并]` 的方括号都不能在代码里拼。
   动态 key（`"filter.field." + field.id`）必须由 `BundleKeysTest` 双向对齐守护。
-- **`Configurable` 的 EP 上必须写 `displayName`（字面量），不得留空、也不要用 `key`**（2026-11-01 更正，
-  此前「两个都不写」的约定会让用户在**打开设置对话框时**看到插件内部错误）：
-  - **留空会报错**：2024+ 的平台 `ConfigurableWrapper.getDisplayName()` 里，EP 既无 `displayName`
-    又无 `key` 时直接 `LOG.error(PluginException("No display name specified in plugin descriptor
-    XML file for configurable ..."))` → 打开「设置」即弹插件错误（2022.1 同一段代码只打 DEBUG，
-    故旧版复现不了；2026.2.3 / 2022.1 两端字节码均已核对）。
-    回归由 `PluginDescriptorTest`（新增，3 例）守护。
-  - **不能用 `key` 代替**：那会让平台走 `ConfigurableEP.getDisplayName()` →
-    `DynamicBundle.getResourceBundle(...)`，其 locale 在**未装语言包**时是 `Locale.getDefault()`
-    ＝**操作系统语言**；本插件**自带** `EnhanceMergeBundle_zh_CN.properties`，
-    于是「中文系统 + 英文 IDE 且未装语言包」时设置页标题变中文、插件其余界面仍是英文
-    （我们的 `EnhanceMergeBundle` 对未知语言强制回退英文基包）→ 同插件两处语言不一致。
-  - **结论**：EP 写**字面量** `displayName="SVN Enhance Merge"`（= 英文文案包里同名 key 的值，
-    英文 IDE 下与原设计完全一致；中文 IDE 下该节点标题是英文产品名，与插件 `<name>` 一致）。
-    仍**不需要**声明 `<resource-bundle>`（声明了会让平台把别的 EP 属性也交给 DynamicBundle 解析）。
+- **插件不再提供设置页**（2026-11-02 起）：`plugin.xml` 里**不得**再注册
+  `<applicationConfigurable>` / `<projectConfigurable>` / `<applicationService>`，
+  行为一律固化在代码常量里（首屏条数 = `LogPageLoader.DEFAULT_PAGE_SIZE` = 100；
+  合并状态恒开）。回归由 `PluginDescriptorTest` 的「未注册任何 Configurable」用例守护。
+  若将来要**重新引入**设置页，以下两条坑必须照办：
+  - **EP 上必须写 `displayName`（字面量），不得留空、也不要用 `key`**（2026-11-01 更正，
+    此前「两个都不写」的约定会让用户在**打开设置对话框时**看到插件内部错误）：
+    - **留空会报错**：2024+ 的平台 `ConfigurableWrapper.getDisplayName()` 里，EP 既无 `displayName`
+      又无 `key` 时直接 `LOG.error(PluginException("No display name specified in plugin descriptor
+      XML file for configurable ..."))` → 打开「设置」即弹插件错误（2022.1 同一段代码只打 DEBUG，
+      故旧版复现不了；2026.2.3 / 2022.1 两端字节码均已核对）。
+    - **不能用 `key` 代替**：那会让平台走 `ConfigurableEP.getDisplayName()` →
+      `DynamicBundle.getResourceBundle(...)`，其 locale 在**未装语言包**时是 `Locale.getDefault()`
+      ＝**操作系统语言**；本插件**自带** `EnhanceMergeBundle_zh_CN.properties`，
+      于是「中文系统 + 英文 IDE 且未装语言包」时设置页标题变中文、插件其余界面仍是英文
+      （我们的 `EnhanceMergeBundle` 对未知语言强制回退英文基包）→ 同插件两处语言不一致。
+    - 即：EP 写**字面量** `displayName="SVN Enhance Merge"`；
+      仍**不需要**声明 `<resource-bundle>`（声明了会让平台把别的 EP 属性也交给 DynamicBundle 解析）。
 - **进度条**：总量未知时用 `isIndeterminate = true` + `text2` 显示计数，
   **不要**用取模/递增伪造 `fraction`（官方不允许编造进度百分比）。
 - **2022.1（since-build=221）里不存在、禁止使用的 API**（用了直接编译失败或要抬高 since-build）：
@@ -385,7 +388,7 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 `SvnRevisionMergeExecutor`、`WcInfoPanelLinkInjector` 均已删除；第四轮的 `ui/RevRangeDialog`、
 第五轮的 `ui/LogFilterPanel` / `log/LogFilterField` 亦已删除。
 
-实际类清单（2026-10-22，第九轮后）：
+实际类清单（2026-11-02，移除设置页后）：
 
 - `EnhanceMergeBundle`、`EnhanceMergeStartup`（启动期仅打印一行 i18n 日志，作为 verify 就绪信号）
 - `tab/EnhanceMergeTabContent`（ChangesViewContentProvider + 可见性谓词 + 标签名）、
@@ -395,19 +398,36 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - `flow/MergeFlow`（分支选择 + 模态修订选择编排）、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`（模态薄包装）、
   `ui/RevisionSelectPanel`（修订选择面板）、`ui/RevisionSearchField`、
   `ui/RevisionSelection`（勾选语义纯逻辑，可单测）、`ui/RevisionAccumulator`（已加载全集累积/去重语义，可单测）
-- `log/LogFilter`、`log/LogPageLoader`、`merge/MergeExecutor`、
-  `settings/EnhanceMergeSettings`（applicationService）、`settings/EnhanceMergeConfigurable`
+- `log/LogFilter`、`log/LogPageLoader`（含 `DEFAULT_PAGE_SIZE = 100`）、`merge/MergeExecutor`
 - **已删除**（D1 ② 入口唯一化）：`wcinfo/WcInfoLinkInjector`、`EnhanceMergeAction`
+- **已删除**（2026-11-02 移除设置页）：`settings/EnhanceMergeSettings`（applicationService）、
+  `settings/EnhanceMergeConfigurable`（设置页 UI）——行为改为代码内常量，插件不再持久化任何配置
 
-单测（2026-11-01，零反射改造后）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
-`EnhanceMergeBundleTest`(8) + `BundleKeysTest`(6) + `EnhanceMergeSettingsTest`(4) +
-`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) + `PluginDescriptorTest`(3) = **66**
-（第九轮 + 「+N」按钮复刻原版后为 55；2026-11-01 上架前审查新增 3 例：
-翻页边界剔除重复条且不丢新修订 / 取消后游标不推进 / 取数期间 reset 时半截数据作废；
-同日零反射改造把 `EnhanceMergeBundleTest` 由 3 例扩到 8 例：英文基包 / 中文包 / 未知语言回退 /
-串语种拒绝 / locale 纯函数 / 诊断字段；同日「设置页 EP 缺 displayName → 打开设置报插件错误」
-修复新增 `PluginDescriptorTest` 3 例）。
+单测（2026-11-02，移除设置页后）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
+`EnhanceMergeBundleTest`(8) + `BundleKeysTest`(6) +
+`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) + `PluginDescriptorTest`(4) = **63**
+（2026-11-01 零反射改造后为 66：其中 `EnhanceMergeSettingsTest`(4) 随设置模块删除而移除，
+`PluginDescriptorTest` 由 3 例扩到 4 例——新增「未注册任何 Configurable」用例）。
 （旧文档里的 12 / 39 / 53 / 54 / 55 / 58 / 60 / 63 均已落后，以 **66** 为准；README 的「测试」章节已同步。）
+
+### 2026-11-02 移除设置页，行为改为代码内固定默认值（**已实施**）
+
+> 用户诉求：「遵循项目规范，将设置功能去掉，代码内默认这些设置即可」。
+
+| 项 | 处理 |
+|---|---|
+| 删除 `settings/EnhanceMergeSettings.kt` | 应用级 `PersistentStateComponent`（持久化 `svnEnhanceMerge.xml`）整体删除 → 插件**不再持久化任何配置** |
+| 删除 `settings/EnhanceMergeConfigurable.kt` | 设置页 UI（`Settings | Version Control | SVN Enhance Merge`）整体删除 |
+| `plugin.xml` | 移除 `<applicationConfigurable>` 与 `<applicationService>` 注册；`<description>` 的隐私段与 `<change-notes>` 同步改写（**上架文案必须与现状一致**） |
+| 首屏条数 | 改为常量 `LogPageLoader.DEFAULT_PAGE_SIZE = 100`（对齐 TortoiseSVN `NumberOfLogs`），调用点 `MergeFlow.openRevisionSelect` |
+| 计算已合并状态 | 改为**恒开**：`RevisionSelectPanel` 内 `refreshMergeStatus` / 右栏「已合并路径」/ 状态图标三处无条件启用（原 `settings.computeMergeStatus` 分支删除） |
+| 文案包 | 删除 `settings.display.name` / `settings.page.size` / `settings.page.size.hint` / `settings.compute.merge.status` / `settings.compute.merge.status.hint`（中英各 5 条） |
+| 单测 | 删 `EnhanceMergeSettingsTest`(4)；`PluginDescriptorTest` 3 → 4 例（新增「**未注册任何 Configurable**」，并保留「若重新注册则 EP 必须有 `displayName` 或 `key`」的规范用例）。总数 66 → **63** |
+
+- 「+100 / +500」按钮的语义不变（固定追加对应条数，原版语义）。
+- `LogPageLoader.loadNextPageRaw(pageSize, …)` 的 `pageSize` **仍是入参**（测试要喂不同页长），
+  只有「首屏用多少条」这件事被固化为常量 —— 别把入参也删掉。
+- 验证：`gradlew test` → 63 用例 0 失败；`gradlew buildPlugin` → BUILD SUCCESSFUL。
 
 ### 2026-11-01 WC Info 面板 UI 与原版逐像素对齐（**已实施**）
 
@@ -854,6 +874,10 @@ TortoiseSVN 的 `LogDlg` 里，**搜索/过滤从不触发服务器请求**：`m
   改动后 29 秒 PASS**，故判定为环境性卡顿（残留进程 / 沙箱状态），与本次改动无关。
   排查顺序固定为：① 杀残留 `*idea-sandbox*` java 进程 → ② 看 `idea.log` 有无插件 ERROR
   → ③ jstack 看栈上有没有本插件类 → ④ 必要时 `git stash` 做 A/B 对照。）
+  （**2026-11-02 移除设置页后重跑**：`test` **63 用例 0 失败**（删 `EnhanceMergeSettingsTest` 4 例、
+  `PluginDescriptorTest` 3→4 例）；`buildPlugin` BUILD SUCCESSFUL（Kotlin 编译零告警）；
+  `runPluginVerifier` / `verifyOnIde` 本轮未重跑——改动只涉及插件自身的设置层与 `plugin.xml`
+  的 EP 注销，未触碰任何 svn4idea API 调用面，兼容结论沿用上一轮。）
 
 - **PowerShell 调用 gradlew 的坑**：`-PideaVersion=2022.1` 这类含点号的参数必须加引号
   （`"-PideaVersion=2022.1"`），否则会被 PowerShell 拆成 `-PideaVersion=2022` + `.1`，报 `Task '.1' not found`。

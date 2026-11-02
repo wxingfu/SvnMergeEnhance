@@ -50,13 +50,24 @@
   - 过滤只作用于**已加载集合**（零服务器请求），命中不足由用户显式「+100 / +500」加载更多；
     游标跟踪**已加载全集的最早修订号**，过滤态下翻页不跳段（原版取 model 末行，过滤后会跳段）。
 - 每修订的合并状态图标（已合并 / 外来 / 计算中）与右栏 `[Already merged]` 标记，
-  复用原版 `MergeChecker` / `ListMergeStatus`，可一键关闭。
+  复用原版 `MergeChecker` / `ListMergeStatus`。
 - 合并执行完全复用原版链路：`LocalChangesPromptTask`（本地改动提示）→
   `SvnIntegrateChangesTask`（进度 / 冲突解决 / 更新信息树）。
-- 设置页：`Settings | Version Control | SVN Enhance Merge`（每页条数、合并状态开关）。
 - 界面文案英文 + 简体中文，按 IDE 语言包状态自动切换。
 
 ### 变更
+- **移除设置页，行为改为代码内固定默认值**（2026-11-02）：
+  - 删除 `settings/EnhanceMergeSettings.kt`（应用级持久化服务）与 `settings/EnhanceMergeConfigurable.kt`
+    （`Settings | Version Control | SVN Enhance Merge` 设置页），并移除 `plugin.xml` 里的
+    `<applicationConfigurable>` 与 `<applicationService>` 注册 → 插件**不再持久化任何自己的配置**，
+    `svnEnhanceMerge.xml` 不再产生。
+  - **每页版本数**改为常量 `LogPageLoader.DEFAULT_PAGE_SIZE = 100`（对齐 TortoiseSVN 的
+    `NumberOfLogs`）；「Load +100 / +500」按钮仍固定追加对应条数（原版语义）。
+  - **计算已合并状态**改为恒开（`RevisionSelectPanel` 内无条件计算并显示状态图标与
+    `[Already merged]` 标记），不再有开关。
+  - 文案包删除 `settings.*` 全部 5 个 key（中英各一份）；`PluginDescriptorTest` 改为守护
+    「**未注册任何 Configurable**」（并保留「若将来重新注册，EP 必须有 `displayName` 或 `key`」的规范用例）。
+  - 单测 66 → 63（删 `EnhanceMergeSettingsTest` 4 例，`PluginDescriptorTest` 3 → 4 例）。
 - **修复打开「设置」对话框即报插件内部错误**（2026-11-01，用户报障）：
   `PluginException: No display name specified in plugin descriptor XML file for configurable
   com.weixf.svn.mergeenhance.settings.EnhanceMergeConfigurable`。

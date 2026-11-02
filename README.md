@@ -16,7 +16,7 @@
 - [环境要求](#环境要求)
 - [安装](#安装)
 - [使用指南](#使用指南)
-- [设置项](#设置项)
+- [内置默认值（无设置项）](#内置默认值无设置项)
 - [技术实现](#技术实现)
 - [项目结构](#项目结构)
 - [开发与构建](#开发与构建)
@@ -110,8 +110,8 @@ Enhance Merge 标签页（工作副本信息块列表）
 
 见 [开发与构建](#开发与构建)，执行 `buildPlugin` 后使用 `build/distributions/*.zip` 按上述步骤安装。
 
-> ⚠️ **改了代码必须重新 `buildPlugin` 并重装 zip**：`plugin.xml`（含扩展点注册、设置页标题的
-> bundle key）只在插件加载时读取一次，重启 IDE 不会让已安装的旧 jar 生效。
+> ⚠️ **改了代码必须重新 `buildPlugin` 并重装 zip**：`plugin.xml`（含扩展点注册）只在插件加载时读取一次，
+> 重启 IDE 不会让已安装的旧 jar 生效。
 
 ### 前置条件
 
@@ -132,7 +132,7 @@ Enhance Merge 标签页（工作副本信息块列表）
 
 3. **② 确认合并方式**：本插件仅提供 **Revision Select**（由你在下一步逐个勾选修订）→ 确认。
 
-4. **③ 等待日志加载**：后台任务直连仓库拉取该分支修订（可取消，首屏条数见[设置项](#设置项)）。
+4. **③ 等待日志加载**：后台任务直连仓库拉取该分支修订（可取消，首屏固定 100 条）。
 
 5. **④ 选择修订**：
    - 勾选需要合并的版本（鼠标点行首复选框，或选中行后按 `Space`）；
@@ -190,8 +190,7 @@ Enhance Merge 标签页（工作副本信息块列表）
    装了中文语言包 → `_zh_CN`，否则 → 英文基包。两个坑位已在代码里处理：
    ①英文一律用 `Locale.ROOT` 请求（否则中文 Windows 上 JDK 会把 `_zh_CN` 命中 → 英文 IDE 里出现中文）；
    ②取到 bundle 后校验语言是否匹配（装了日文语言包而无 `_ja` 时不回退成中文）。
-   设置页标题**刻意不写** EP 的 `key`/`displayName`（那会让平台按 `Locale.getDefault()`＝**操作系统语言**解析，
-   在「中文系统 + 英文 IDE」上显示中文），改由 `Configurable.getDisplayName()` 提供，与对话框语言判定统一。
+   插件**不注册设置页**，无「设置页标题」这一处语言差异点。
 
 ### 与原插件的关系
 
@@ -220,8 +219,6 @@ SvnMergeEnhance/
 │   ├── log/LogPageLoader.kt             # 修订日志分页加载（游标单通道 + 世代号防串 + 翻页边界剔除）
 │   ├── log/LogFilter.kt                 # 过滤条件模型（关键词 + 全字段 + 空格 AND + 大小写不敏感）
 │   ├── merge/MergeExecutor.kt           # 合并执行（LocalChangesPromptTask + SvnIntegrateChangesTask）
-│   ├── settings/EnhanceMergeSettings.kt  # 设置状态（applicationService，持久化 svnEnhanceMerge.xml）
-│   ├── settings/EnhanceMergeConfigurable.kt # 设置页 UI（Version Control 分组）
 │   ├── tab/EnhanceMergeTabContent.kt    # 标签页 ChangesViewContentProvider + 可见性 + 标签名
 │   ├── tab/EnhanceMergePanel.kt         # 标签页主体（工作副本列表 + Merge From… 链接）
 │   ├── tab/WcInfoPanel.kt               # 工作副本信息块（复刻原版 WorkingCopyInfoPanel 的 HTML 渲染）
@@ -244,8 +241,7 @@ SvnMergeEnhance/
     ├── RevisionAccumulatorTest.kt       # 已加载全集累积 4 用例（跨页去重 / 批内重复全保留）
     ├── EnhanceMergeBundleTest.kt        # 文案 bundle 3 用例（基包 / _zh_CN / 缺键回退）
     ├── BundleKeysTest.kt                # 文案 key 对齐 6 用例（中英一致 / 非空 / 各功能 key / 「+N」文案占位符）
-    ├── PluginDescriptorTest.kt          # 插件描述文件 3 用例（Configurable 必须有 displayName/key / 无 2022.1 不认的元素 / since-build 与 depends）
-    └── settings/EnhanceMergeSettingsTest.kt # 设置持久化 4 用例（pageSize 夹取 / 旧配置兼容 / 开关往返）
+    └── PluginDescriptorTest.kt          # 插件描述文件 4 用例（未注册 Configurable / 若注册必须有 displayName 或 key / 无 2022.1 不认的元素 / since-build 与 depends）
 ```
 
 ---
@@ -300,23 +296,26 @@ SvnMergeEnhance/
 
 ---
 
-## 设置项
+## 内置默认值（无设置项）
 
-`Settings/Preferences → Version Control → SVN Enhance Merge`：
+本插件**不提供设置页**（`Settings/Preferences → Version Control` 下无本插件节点），
+行为直接固化在代码里：
 
-| 项 | 默认值 | 说明 |
+| 项 | 内置值 | 说明 |
 |---|---|---|
-| 每页版本数 | `100` | **首屏**加载的版本条数（10–500），对齐 TortoiseSVN 的 `NumberOfLogs`。「Load +100 / Load +500」按钮固定每次追加对应条数（与内置 Subversion 插件一致，不受本设置影响） |
-| 计算已合并状态 | 开 | 为每行显示已合并/外来/计算中图标，并在变更文件列表标记 `[Already merged]`；关闭后不读取 `svn:mergeinfo` |
+| 首屏版本数 | `100` | **首屏**加载的版本条数，对齐 TortoiseSVN 的 `NumberOfLogs`。「Load +100 / Load +500」按钮固定每次追加对应条数（与内置 Subversion 插件一致） |
+| 计算已合并状态 | 恒开 | 为每行显示已合并/外来/计算中图标，并在变更文件列表标记 `[Already merged]`（需读取 `svn:mergeinfo`） |
 
-设置持久化于应用级 `svnEnhanceMerge.xml`，重启 IDE 后仍生效。界面语言跟随 IDE
-（未装语言包时为英文，装了中文语言包后自动切换中文）。
+对应代码常量：`LogPageLoader.DEFAULT_PAGE_SIZE`（首屏条数）；合并状态在
+`RevisionSelectPanel` 中无条件启用。插件**不持久化任何自己的配置**。
+
+界面语言跟随 IDE（未装语言包时为英文，装了中文语言包后自动切换中文）。
 
 ---
 
 ## 测试
 
-### 纯逻辑单元测试（66 用例，不连仓库）
+### 纯逻辑单元测试（63 用例，不连仓库）
 
 ```bash
 ./gradlew.bat test
@@ -331,8 +330,7 @@ SvnMergeEnhance/
 | `RevisionAccumulatorTest` | 4 | 已加载全集累积：跨页去重、**批内重复修订号全部保留**（SVN 合并修订按路径展开） |
 | `EnhanceMergeBundleTest` | 8 | locale 判定（**零反射**）：英文/无法判定 → 英文基包（`Locale.ROOT`）、中文 → `_zh_CN`、未知语言 → 回退基包不串语种、语言不符即拒绝、locale 纯函数、诊断字段 |
 | `BundleKeysTest` | 6 | 文案 key：中英包集合一致、取值非空、搜索框 key、标签页 key、合并方式弹窗 key、**「+N」按钮文案含 `{0}` 占位符** |
-| `EnhanceMergeSettingsTest` | 4 | 设置持久化：pageSize 夹取、旧配置（含已删字段）兼容、开关往返 |
-| `PluginDescriptorTest` | 3 | 插件描述文件：**`Configurable` 的 EP 必须有 `displayName` 或 `key`**（2024+ 平台缺省会抛 `PluginException`，打开设置对话框即报插件错误）、不含 IDEA 2022.1 不认识的元素（`license`/`support`/`privacy-policy` → 插件加载失败）、`since-build` 与 `<depends>` 齐全 |
+| `PluginDescriptorTest` | 4 | 插件描述文件：**未注册任何 `Configurable`**（设置功能已移除）、若将来重新注册则 EP 必须有 `displayName` 或 `key`（2024+ 平台缺省会抛 `PluginException`，打开设置对话框即报插件错误）、不含 IDEA 2022.1 不认识的元素（`license`/`support`/`privacy-policy` → 插件加载失败）、`since-build` 与 `<depends>` 齐全 |
 
 > 测试通过 `cursorSource` 注入点喂假数据，不连仓库；
 > `SvnChangeList` / `MergeContext` 用 mockk 只 stub 需要的 getter。
@@ -491,8 +489,8 @@ deprecation 会把构建卡死）。
 本插件**不收集、不传输、不存储任何个人数据**：不含遥测、统计或任何第三方网络请求，
 仅通过 IDE 自带的 Subversion 集成与你的 SVN 仓库通信。
 
-唯一持久化的内容是 `Settings | Version Control | SVN Enhance Merge` 里的两个选项
-（每页版本数、是否计算合并状态），保存在 IDE 的应用级配置文件 `svnEnhanceMerge.xml` 中。
+本插件**不持久化任何自己的配置**（已移除设置页，所有行为固定在代码里），
+也不写入 IDE 的应用级配置文件 `svnEnhanceMerge.xml`。
 
 ---
 

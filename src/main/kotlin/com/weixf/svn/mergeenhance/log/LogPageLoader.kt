@@ -233,6 +233,16 @@ class LogPageLoader(
 
     companion object {
         /**
+         * 首屏加载的修订条数（**代码内固定值**，插件不提供设置项）。
+         *
+         * 对齐 TortoiseSVN 的 `NumberOfLogs` 默认 100
+         * （`CRegDWORD("Software\\TortoiseSVN\\NumberOfLogs", 100)`）。
+         *
+         * ⚠️ 只作用于**首屏**；工具栏「Load +100 / +500」固定每次追加对应条数（原版语义）。
+         */
+        const val DEFAULT_PAGE_SIZE = 100
+
+        /**
          * 单次翻页最多补几批原始数据（防止极端情况下无休止扫描）。
          *
          * 为什么必须设上限：服务端单批可能只返回很少几条（分支上匹配项稀疏），

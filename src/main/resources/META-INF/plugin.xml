@@ -85,11 +85,11 @@ plugin cannot be loaded (it declares <i>&lt;depends&gt;Subversion&lt;/depends&gt
 
 <p><b>Privacy / 隐私：</b>this plugin <b>does not collect, transmit or store any personal data</b>.
 It only talks to your Subversion repository through the IDE's own Subversion integration; no
-telemetry, no analytics, no network calls to JetBrains or anywhere else. The only settings it
-persists are the two options you can change in <i>Settings | Version Control | SVN Enhance Merge</i>.
+telemetry, no analytics, no network calls to JetBrains or anywhere else. It does not persist
+any settings of its own.
 <br/><b>隐私：</b>本插件<b>不收集、不传输、不存储任何个人数据</b>，不含任何遥测或统计代码；
 它仅通过 IDE 自带的 Subversion 集成与你的 SVN 仓库通信，除此之外不发起任何网络请求。
-唯一持久化的内容是 <i>设置 | 版本控制 | SVN 增强合并</i> 里的两个选项。</p>
+本插件<b>不持久化任何自己的设置项</b>。</p>
 
 <p><b>Support / 支持：</b>source code, changelog and issue tracker:
 <a href="https://github.com/wxingfu/SvnMergeEnhance">github.com/wxingfu/SvnMergeEnhance</a> ·
@@ -116,8 +116,8 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
   <li>Only revisions of the <b>source branch itself</b> are listed. The built-in dialog also lists
       copies of revisions that were merged into that branch; they do not exist on the target branch
       and cannot be merged into it, so they are left out here.</li>
-  <li>Settings page under <i>Settings | Version Control | SVN Enhance Merge</i>
-      (revisions per page, merge status calculation).</li>
+  <li>Settings are built into the code: the first screen loads 100 revisions and the per-revision
+      merge status is always calculated (no options to configure).</li>
   <li>English and Simplified Chinese UI, following the IDE language pack.</li>
 </ul>
 
@@ -131,7 +131,8 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
       分页加载（+100 / +500），内联差异（Ctrl+D），以及每个版本的合并状态图标。</li>
   <li>清单只含<b>源分支自身</b>的版本。内置对话框还会列出「合并进该分支的版本副本」，
       它们在目标分支上并不存在、无法合并不进去，本插件不再列出这类条目。</li>
-  <li>设置页：<i>设置 | 版本控制 | SVN 增强合并</i>（每页版本数、是否计算合并状态）。</li>
+  <li>设置项已内置到代码：首屏固定加载 100 条修订，逐版本合并状态恒为计算中
+      （不再提供可配置项）。</li>
   <li>界面提供英文与简体中文，随 IDE 语言包自动切换。</li>
 </ul>
     ]]></change-notes>
@@ -144,7 +145,7 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
       刻意**不**声明 <resource-bundle>：本插件的文案由 EnhanceMergeBundle 自行加载
       （语言包感知，见该类文档），不走平台的 DynamicBundle 解析；
       声明它反而会让平台把 EP 的 key= 也交给 DynamicBundle（未装语言包时按操作系统语言解析），
-      破坏「按 IDE 语言包判定」的策略（见下方 applicationConfigurable 注释）。
+      破坏「按 IDE 语言包判定」的策略。
     -->
 
     <!-- 最低兼容 IDEA 2022.1（build 221） -->
@@ -171,35 +172,5 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
           作为 scripts/verify-plugin.ps1 的「插件已加载」就绪信号；不做任何 UI 注入 / 反射 / 轮询。
         -->
         <postStartupActivity implementation="com.weixf.svn.mergeenhance.EnhanceMergeStartup"/>
-
-        <!--
-          设置页（T9 / Spec R11）：Settings → Version Control → SVN Enhance Merge。
-          应用级注册：与内置 Subversion 的 SvnConfigurable 同处 Version Control 分组，
-          且 projectConfigurable 的实例由平台无参构造、拿不到 Project 句柄（见 EnhanceMergeSettings 注释）。
-
-          ⚠️ **必须写 displayName（或 key）**：2024+ 的平台在 `ConfigurableWrapper.getDisplayName()`
-          里发现 EP 既无 displayName 又无 key 时，会直接
-          `LOG.error(PluginException("No display name specified in plugin descriptor XML file
-          for configurable ..."))` → **打开「设置」对话框即报插件错误**（用户可见的红色报错）。
-          2022.1 同一段代码只打 DEBUG 日志，故旧版看不到这个坑。
-          两端字节码均已核对：2022.1 `ConfigurableWrapper.getDisplayName()`（app.jar）、
-          2026.2.3（intellij.platform.ide.impl.jar）。
-
-          ⚠️ **为什么用字面量 displayName，而不是 key + bundle**：
-          `key` 会让平台走 `ConfigurableEP.getDisplayName()` → `DynamicBundle.getResourceBundle(...)`，
-          其 locale 在**未安装语言包**时是 `Locale.getDefault()`（= 操作系统语言）。
-          本插件**自带** `messages/EnhanceMergeBundle_zh_CN.properties`，于是
-          「中文系统 + 英文 IDE 且未装语言包」的机器上，设置页标题会变成中文，
-          而插件其余界面仍是英文（我们的 `EnhanceMergeBundle` 对未知语言强制回退英文基包）→
-          同一插件两处语言不一致。
-          字面量 `displayName` 与语言无关，221–262 表现完全一致。
-          代价：中文 IDE 的设置树里该节点标题是英文产品名 "SVN Enhance Merge"（与插件 `<name>` 一致）。
-        -->
-        <applicationConfigurable
-            parentId="vcs"
-            id="com.weixf.svn.mergeenhance.settings"
-            displayName="SVN Enhance Merge"
-            instance="com.weixf.svn.mergeenhance.settings.EnhanceMergeConfigurable"/>
-        <applicationService serviceImplementation="com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings"/>
     </extensions>
 </idea-plugin>

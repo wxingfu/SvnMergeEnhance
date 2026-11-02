@@ -17,7 +17,8 @@ import kotlin.test.assertTrue
  * 插件描述文件里的属性写错，**编译期与单测都发现不了**，只在运行时炸，且往往要用户
  * 打开对应界面才触发（表现为 IDE 弹「插件内部错误」）。本文件守护三类已踩过的坑：
  *
- * 1. **`Configurable` 的 EP 必须有 `displayName` 或 `key`**
+ * 1. **不应再注册 `Configurable`**：设置功能已整体移除（行为改为代码内固定默认值），
+ *    若将来重新引入设置页，EP 必须有 `displayName` 或 `key`
  *    （2026-11-01 用户报障）：2024+ 的平台在 `ConfigurableWrapper.getDisplayName()` 里发现
  *    EP 两样都没写时，会 `LOG.error(PluginException("No display name specified in plugin
  *    descriptor XML file for configurable ..."))` → **打开「设置」对话框即报插件错误**。
@@ -65,10 +66,23 @@ class PluginDescriptorTest {
     }
 
     @Test
-    fun `configurable extensions declare a display name or a key`() {
+    fun `no configurable extension is registered`() {
+        // 设置功能已整体移除（行为改为代码内固定默认值），因此**不应**再注册 Configurable。
+        // 保留本用例是为了防止将来误加回设置页时又踩「EP 缺 displayName」的坑。
         val configurables = descriptor().allElements("applicationConfigurable") +
             descriptor().allElements("projectConfigurable")
-        assertTrue(configurables.isNotEmpty(), "plugin.xml 里没有找到任何 Configurable 注册")
+        assertTrue(
+            configurables.isEmpty(),
+            "插件不再提供设置页，不应注册 Configurable：${configurables.map { it.getAttribute("id") }}",
+        )
+    }
+
+    @Test
+    fun `any configurable extension would declare a display name or a key`() {
+        // 规范守护：若将来真的重新引入设置页，EP 必须写 displayName 或 key，
+        // 否则 2024+ 平台在打开「设置」对话框时会抛 PluginException（用户可见的红色报错）。
+        val configurables = descriptor().allElements("applicationConfigurable") +
+            descriptor().allElements("projectConfigurable")
         for (configurable in configurables) {
             val id = configurable.getAttribute("id")
             val hasName = configurable.hasAttribute("displayName") && configurable.getAttribute("displayName").isNotBlank()

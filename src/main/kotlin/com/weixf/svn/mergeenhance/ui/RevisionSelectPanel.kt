@@ -41,7 +41,6 @@ import com.intellij.util.ui.UIUtil
 import com.weixf.svn.mergeenhance.EnhanceMergeBundle
 import com.weixf.svn.mergeenhance.log.LogFilter
 import com.weixf.svn.mergeenhance.log.LogPageLoader
-import com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings
 import org.jetbrains.idea.svn.history.SvnChangeList
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -130,9 +129,6 @@ class RevisionSelectPanel(
 
     // ---- T8：合并状态（已合并 / 外来 / 刷新中），复用原版 MergeChecker + ListMergeStatus ----
     private val LOG = Logger.getInstance(RevisionSelectPanel::class.java)
-
-    /** 插件设置（T9）：每页条数 / 是否计算合并状态。 */
-    private val settings = EnhanceMergeSettings.getInstance()
 
     /**
      * 合并状态计算器（原版 `MergeChecker` 实现）。
@@ -402,8 +398,8 @@ class RevisionSelectPanel(
         // 首屏过滤条件 = 空（无搜索词即不过滤）。
         currentFilter = LogFilter()
 
-        // T8：按设置计算合并状态。关设置时完全不调 prepare()/checkList()。
-        if (settings.computeMergeStatus) refreshMergeStatus(model.items)
+        // T8：计算合并状态（**恒开**——插件不提供设置项，行为与原版一致）。
+        refreshMergeStatus(model.items)
     }
 
     override fun dispose() {
@@ -735,14 +731,10 @@ class RevisionSelectPanel(
      */
     private fun refreshRightPane(chosen: List<SvnChangeList>) {
         if (isDisposed || context.project.isDisposed) return
-        val mergedPaths: Set<Change> = if (settings.computeMergeStatus) {
-            val acc = HashSet<Change>()
+        val mergedPaths: Set<Change> = HashSet<Change>().apply {
             for (list in chosen) {
-                acc.addAll(getAlreadyMergedPaths(list))
+                addAll(getAlreadyMergedPaths(list))
             }
-            acc
-        } else {
-            emptySet()
         }
         val changes = if (chosen.isEmpty()) emptyList() else collectChanges(chosen)
         ApplicationManager.getApplication().invokeLater(
@@ -812,15 +804,11 @@ class RevisionSelectPanel(
         private val changeListRenderer = CommittedChangeListRenderer(
             context.project,
             listOf(CommittedChangeListDecorator { list ->
-                if (!settings.computeMergeStatus) {
-                    null
-                } else {
-                    // 原版语义（与 main 版一致）：无记录 → 「刷新中」图标；
-                    // 状态本身无图标（如 ALIEN）→ 同样回落「刷新中」，
-                    // 保证**每一行都有状态图标**（第八轮曾把 ALIEN 渲染成「无图标」，
-                    // 整行看不出是「外来修订 / 状态未知」，用户会以为版本缺失）。
-                    mergeStatusMap[list.number]?.icon ?: ListMergeStatus.REFRESHING.icon
-                }
+                // 原版语义（与 main 版一致）：无记录 → 「刷新中」图标；
+                // 状态本身无图标（如 ALIEN）→ 同样回落「刷新中」，
+                // 保证**每一行都有状态图标**（第八轮曾把 ALIEN 渲染成「无图标」，
+                // 整行看不出是「外来修订 / 状态未知」，用户会以为版本缺失）。
+                mergeStatusMap[list.number]?.icon ?: ListMergeStatus.REFRESHING.icon
             }),
         )
 

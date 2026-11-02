@@ -10,7 +10,6 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.weixf.svn.mergeenhance.EnhanceMergeBundle
 import com.weixf.svn.mergeenhance.log.LogPageLoader
 import com.weixf.svn.mergeenhance.merge.MergeExecutor
-import com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings
 import com.weixf.svn.mergeenhance.ui.RevisionSelectDialog
 import org.jetbrains.idea.svn.SvnUtil
 import org.jetbrains.idea.svn.commandLine.SvnBindException
@@ -117,7 +116,7 @@ object MergeFlow {
                 indicator.isIndeterminate = true
                 // 首屏：加载器刚创建、世代号即 0，游标从 HEAD 开始；透传 indicator → 进度条「取消」可真正中止
                 items = loader.loadNextPageRaw(
-                    EnhanceMergeSettings.getInstance().pageSize,
+                    LogPageLoader.DEFAULT_PAGE_SIZE,
                     loader.snapshot(),
                     indicator,
                 )
