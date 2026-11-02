@@ -244,6 +244,7 @@ SvnMergeEnhance/
     ├── RevisionAccumulatorTest.kt       # 已加载全集累积 4 用例（跨页去重 / 批内重复全保留）
     ├── EnhanceMergeBundleTest.kt        # 文案 bundle 3 用例（基包 / _zh_CN / 缺键回退）
     ├── BundleKeysTest.kt                # 文案 key 对齐 6 用例（中英一致 / 非空 / 各功能 key / 「+N」文案占位符）
+    ├── PluginDescriptorTest.kt          # 插件描述文件 3 用例（Configurable 必须有 displayName/key / 无 2022.1 不认的元素 / since-build 与 depends）
     └── settings/EnhanceMergeSettingsTest.kt # 设置持久化 4 用例（pageSize 夹取 / 旧配置兼容 / 开关往返）
 ```
 
@@ -315,7 +316,7 @@ SvnMergeEnhance/
 
 ## 测试
 
-### 纯逻辑单元测试（63 用例，不连仓库）
+### 纯逻辑单元测试（66 用例，不连仓库）
 
 ```bash
 ./gradlew.bat test
@@ -331,6 +332,7 @@ SvnMergeEnhance/
 | `EnhanceMergeBundleTest` | 8 | locale 判定（**零反射**）：英文/无法判定 → 英文基包（`Locale.ROOT`）、中文 → `_zh_CN`、未知语言 → 回退基包不串语种、语言不符即拒绝、locale 纯函数、诊断字段 |
 | `BundleKeysTest` | 6 | 文案 key：中英包集合一致、取值非空、搜索框 key、标签页 key、合并方式弹窗 key、**「+N」按钮文案含 `{0}` 占位符** |
 | `EnhanceMergeSettingsTest` | 4 | 设置持久化：pageSize 夹取、旧配置（含已删字段）兼容、开关往返 |
+| `PluginDescriptorTest` | 3 | 插件描述文件：**`Configurable` 的 EP 必须有 `displayName` 或 `key`**（2024+ 平台缺省会抛 `PluginException`，打开设置对话框即报插件错误）、不含 IDEA 2022.1 不认识的元素（`license`/`support`/`privacy-policy` → 插件加载失败）、`since-build` 与 `<depends>` 齐全 |
 
 > 测试通过 `cursorSource` 注入点喂假数据，不连仓库；
 > `SvnChangeList` / `MergeContext` 用 mockk 只 stub 需要的 getter。

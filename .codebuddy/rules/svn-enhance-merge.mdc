@@ -193,10 +193,21 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - **`LOG.error` 只用于真正的内部错误**；可恢复的失败一律 `LOG.warn`（否则会触发插件上报/blame）。
 - **用户可见文本（含标点）一律进文案包**：状态栏 `r{x} – r{y}`、`[已合并]` 的方括号都不能在代码里拼。
   动态 key（`"filter.field." + field.id`）必须由 `BundleKeysTest` 双向对齐守护。
-- **`Configurable` 的 EP 上不要写 `key` / `displayName`**：`ConfigurableWrapper.getDisplayName()`
-  里 EP 优先，会绕过本插件自己的 locale 判定（`EnhanceMergeBundle` 按 **IDE 当前语言**选文案；
-  而平台那套按 `Locale.getDefault()`＝**操作系统语言**解析，中文系统 + 英文 IDE 会显示中文）。
-  两个都不写即回退到 `Configurable.getDisplayName()`；同理无需 `<resource-bundle>`。
+- **`Configurable` 的 EP 上必须写 `displayName`（字面量），不得留空、也不要用 `key`**（2026-11-01 更正，
+  此前「两个都不写」的约定会让用户在**打开设置对话框时**看到插件内部错误）：
+  - **留空会报错**：2024+ 的平台 `ConfigurableWrapper.getDisplayName()` 里，EP 既无 `displayName`
+    又无 `key` 时直接 `LOG.error(PluginException("No display name specified in plugin descriptor
+    XML file for configurable ..."))` → 打开「设置」即弹插件错误（2022.1 同一段代码只打 DEBUG，
+    故旧版复现不了；2026.2.3 / 2022.1 两端字节码均已核对）。
+    回归由 `PluginDescriptorTest`（新增，3 例）守护。
+  - **不能用 `key` 代替**：那会让平台走 `ConfigurableEP.getDisplayName()` →
+    `DynamicBundle.getResourceBundle(...)`，其 locale 在**未装语言包**时是 `Locale.getDefault()`
+    ＝**操作系统语言**；本插件**自带** `EnhanceMergeBundle_zh_CN.properties`，
+    于是「中文系统 + 英文 IDE 且未装语言包」时设置页标题变中文、插件其余界面仍是英文
+    （我们的 `EnhanceMergeBundle` 对未知语言强制回退英文基包）→ 同插件两处语言不一致。
+  - **结论**：EP 写**字面量** `displayName="SVN Enhance Merge"`（= 英文文案包里同名 key 的值，
+    英文 IDE 下与原设计完全一致；中文 IDE 下该节点标题是英文产品名，与插件 `<name>` 一致）。
+    仍**不需要**声明 `<resource-bundle>`（声明了会让平台把别的 EP 属性也交给 DynamicBundle 解析）。
 - **进度条**：总量未知时用 `isIndeterminate = true` + `text2` 显示计数，
   **不要**用取模/递增伪造 `fraction`（官方不允许编造进度百分比）。
 - **2022.1（since-build=221）里不存在、禁止使用的 API**（用了直接编译失败或要抬高 since-build）：
@@ -379,7 +390,8 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - `EnhanceMergeBundle`、`EnhanceMergeStartup`（启动期仅打印一行 i18n 日志，作为 verify 就绪信号）
 - `tab/EnhanceMergeTabContent`（ChangesViewContentProvider + 可见性谓词 + 标签名）、
   `tab/EnhanceMergePanel`（主体：工作副本列表 + 每块「Merge From…」）、
-  `tab/WcInfoPanel`（工作副本信息块，用平台 `HtmlPanel` 复刻原版渲染）
+  `tab/WcInfoPanel`（工作副本信息块，用平台 `HtmlPanel` 复刻原版渲染；
+  **必须 `setBorder(null)`**，见「2026-11-01 WC Info 面板 UI 与原版逐像素对齐」）
 - `flow/MergeFlow`（分支选择 + 模态修订选择编排）、`ui/MergeVariantDialog`、`ui/RevisionSelectDialog`（模态薄包装）、
   `ui/RevisionSelectPanel`（修订选择面板）、`ui/RevisionSearchField`、
   `ui/RevisionSelection`（勾选语义纯逻辑，可单测）、`ui/RevisionAccumulator`（已加载全集累积/去重语义，可单测）
@@ -389,12 +401,126 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 
 单测（2026-11-01，零反射改造后）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
 `EnhanceMergeBundleTest`(8) + `BundleKeysTest`(6) + `EnhanceMergeSettingsTest`(4) +
-`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) = **63**
+`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) + `PluginDescriptorTest`(3) = **66**
 （第九轮 + 「+N」按钮复刻原版后为 55；2026-11-01 上架前审查新增 3 例：
 翻页边界剔除重复条且不丢新修订 / 取消后游标不推进 / 取数期间 reset 时半截数据作废；
 同日零反射改造把 `EnhanceMergeBundleTest` 由 3 例扩到 8 例：英文基包 / 中文包 / 未知语言回退 /
-串语种拒绝 / locale 纯函数 / 诊断字段）。
-（旧文档里的 12 / 39 / 53 / 54 / 55 / 58 / 60 均已落后，以 **63** 为准；README 的「测试」章节已同步。）
+串语种拒绝 / locale 纯函数 / 诊断字段；同日「设置页 EP 缺 displayName → 打开设置报插件错误」
+修复新增 `PluginDescriptorTest` 3 例）。
+（旧文档里的 12 / 39 / 53 / 54 / 55 / 58 / 60 / 63 均已落后，以 **66** 为准；README 的「测试」章节已同步。）
+
+### 2026-11-01 WC Info 面板 UI 与原版逐像素对齐（**已实施**）
+
+> 用户反馈：「在 Subversion Working Copies Information 面板切换过程中发现 UI 没有对齐」。
+> 本节记录**实测结论**与**必须记住的坑**，勿再犯。
+
+#### 实测方法（可复现）
+
+用户给的两张截图（IDE 同一时刻、同一工具窗）用 Pillow 逐行扫描「亮像素」求每行文本的
+起止 x/y，再按「文字墨迹」分离出图标区（x<40）与文本区（x≥44）：
+
+| 项 | 原版 `Subversion Working Copies Information` | 本插件 `Enhance Merge` | 差 |
+|---|---|---|---|
+| 标签列起点（URL:/Format:/Depth: 左边缘） | x=49 | x=51 | **+2** |
+| 值列起点 | x=169 | x=171 | +2 |
+| 首行（path）文字顶端 | y=47 | y=49 | **+2** |
+| 行距（path→URL→Format→Depth→…） | 25/24/25/25/26 | 同 | 0 |
+| 刷新图标 | x=12..27, y=44..55 | x=11..26, y=43..54 | 左上各 1px |
+| 行数 | 8（多一行 Configure Branches） | 7 | **−1** |
+
+#### 根因与结论
+
+1. **主因（+2px）：`HtmlPanel` 的默认 `MarginBorder`**。
+   `HtmlPanel` = `JEditorPane`，Swing 默认给它装 `BasicBorders.MarginBorder(3,3,3,3)`
+   （实测 `getInsets()=(3,3,3,3)`、`getMargin()=(3,3,3,3)`）；
+   **原版 svn4idea 在 `CopiesPanel.updateList()` 里显式 `infoPanel.setBorder(null)` 抹掉了它**
+   （`setBorder(null)` 后 `getInsets()=(0,0,0,0)`，`getMargin()` 仍是 3 → 文字落点 (2,6)）。
+   本插件此前没清 → 文字落点 (5,9)，**整块内容右移/下移 3px**，与工具栏宽度差 1px 抵消后净差 2px，
+   表现为「两个标签页切换时内容跳位」。
+   ✅ **已修**：`tab/WcInfoPanel` 的 `init` 里 `border = null` + `isFocusable = true`，
+   并 override `updateUI()` 再清一次（切主题会重新装上 MarginBorder——原版只在创建时清一次，
+   切主题后会漂 3px，属原版缺陷，**不照抄**）。
+2. **「Configure Branches」行缺失**：原版有（第 8 行），本插件按旧决策 D2「不复刻」而缺一行，
+   导致行数与后续行位置都不同。
+   ✅ **已修**：原版该动作走的是**公开**的
+   `org.jetbrains.idea.svn.branchConfig.BranchConfigurationDialog.configureBranches(project, root)`
+   （2022.1 与最新版 svn4idea 均为 `public static`），**并不依赖 internal 的
+   `SvnBranchConfigurationManager`** → D2 的原理由不成立，已复刻该行（弹的就是内置插件自己的对话框）。
+3. **出错工作副本的行语义**：原版 `UiBuilder.build()` 把 cleanup / configureBranches / mergeFrom
+   三行整体放在 `if (!info.hasError())` 里；本插件此前把 cleanup 放在判断之外 →
+   出错的工作副本会多出一个无意义的「Cleanup」行。✅ **已修**（三行统一收进 `!hasError()`）。
+4. **残留 1px（工具栏宽度）**：原版工具栏用平台动作组 `Svn.WorkingCopiesView.Toolbar`
+   （内含 `Svn.RefreshWorkingCopies`），本插件自建 `DumbAwareAction` → 工具栏宽 44 vs 43、图标左偏 1px。
+   ⚠️ **平台那个动作不能直接复用**：`RefreshWorkingCopiesAction.update()` 里
+   `isVisible = (ChangesViewContentManager.getActiveComponent(CopiesPanel) != null)`，
+   在本插件标签页里 `CopiesPanel` 不是活动组件 → 按钮会被**隐藏**。故保留自建动作，
+   1px 差异属可接受残留（肉眼不可见）。
+
+#### 仍与原版不同（**已知、有意保留**，勿当缺陷）
+
+- 原版按条件还会多出两行，本插件未复刻（都涉及**修改工作副本**，风险高）：
+  「Change Format」（`upgradeFormats.size > 1` 时）与「Fix Depth」（深度非 infinity 时）。
+- 原版枚举用 `getWcInfosWithErrors()`（含出错工作副本，红字显示错误），本插件用 `getAllWcInfos()`
+  （只含正常工作副本）→ `WcInfoPanel.urlRow()` 的红字分支目前是防御性死代码。
+- 中文 IDE 下本插件的「URL：/格式：/深度：」是中文，原版 svn4idea **没有中文包** → 仍显示英文。
+  属本插件的双语设计，不是错位。
+
+#### 复现用的离线探针（可复用）
+
+无需启动 IDE：用平台 jar（`G:/GradleRepository/idea/ideaIC-2022.1/lib/*`）+ `app.jar` 里的
+`HtmlPanel` 写一个 headless 小程序，`paint()` 到 `BufferedImage` 后扫描深色像素即可测出文字落点；
+`p.getInsets()` / `p.getMargin()` / `p.getBorder()` 直接印证 `MarginBorder` 的来源。
+
+### 2026-11-02 「Configure Branches」跨版本规范核验（结论：**合规**）
+
+> 起因：第七轮把「Configure Branches」补进 WC Info 面板后，需确认它**在 IDEA 2022→2026 全区间**
+> 都只用公开 API、不触犯官方插件规范。
+
+#### 使用的 API（唯一一处）
+
+`org.jetbrains.idea.svn.branchConfig.BranchConfigurationDialog.configureBranches(Project, VirtualFile)`
+
+- **Java 类**（非 Kotlin `internal`）→ `public class ... extends DialogWrapper`；
+  方法 `public static void configureBranches(...)`；
+  源码与字节码**均无** `@ApiStatus.Internal` / `@TestOnly` 等内部标注。
+- ⚠️ **不要碰** `SvnBranchConfigurationManager`（internal）：原版 `CopiesPanel` 也不碰，
+  它只调上面这个公开入口；我们同样只调公开入口。
+
+#### 跨版本签名核验（逐版本下载 Marketplace 对应的 Subversion 插件 + `javap` 实测）
+
+| IDE | 对应 Subversion 插件 | `configureBranches` 签名 |
+|---|---|---|
+| 2022.1 | 内置 svn4idea（IC-221.5080.210） | `public static void configureBranches(Project, VirtualFile)` |
+| 2022.3 | 223.8617.3 | 同上 |
+| 2023.3 | 233.15619.13 | 同上 |
+| 2024.3 | 243.28141.47 | 同上 |
+| 2025.3 | 253.33813.109 | 同上 |
+| 2026.1 | 261.27258.145 | 同上 |
+| 2026.2 | 262.10968.211（verifier 解析）/ 262.11879.106（Marketplace 最新） | 同上 |
+
+→ **2022–2026 全程可见性与签名零变化**（`javap` 实测，非推断）。
+IDEA 2026.3 / build 263 Marketplace 暂无兼容版本，且本插件 `until-build=262.*`，不在支持范围。
+核验方法（可复用）：`POST https://plugins.jetbrains.com/api/search/compatibleUpdates`
+（body `{"build":"IC-233.15619.13","pluginXMLIds":["Subversion"]}`，**必须带 `Content-Type: application/json`**）
+拿到 `id` 后 `GET https://plugins.jetbrains.com/plugin/download?rel=true&updateId=<id>` 取 zip，
+再用嵌套 `zipfile` 找到含 `org/jetbrains/idea/svn/branchConfig/BranchConfigurationDialog.class` 的 jar。
+
+#### 官方规范逐项自查
+
+| 项 | 结论 |
+|---|---|
+| 反射 / 内部 API | **零**（Plugin Verifier 报告里**没有** internal-api-usages 文件；仅 1 处既有 deprecated：`ActionToolbar.updateActionsImmediately`，平台仍可用） |
+| 二进制兼容 | `runPluginVerifier`：IC-221 与 IC-262 均 **Compatible** |
+| 依赖声明 | `<depends>Subversion</depends>` 已有（2026.x 起 SVN 不再随发行版分发，`<description>` 已提示先装官方 SVN 插件） |
+| 行为一致性 | 原版 `CopiesPanel.configureBranches` = `checkRoot(root, …)` + 同一句 `BranchConfigurationDialog.configureBranches(project, root)`；我们**逐行同构** |
+| 不越界 | 不写 `SvnConfiguration`、不新增 EP/action、不轮询、不后台线程（EDT 上直接弹模态 `DialogWrapper`，与原版一致） |
+| Marketplace 审核 | 调用**已声明依赖**插件的**公开** API 是常规做法，无审核风险 |
+
+#### 已知残留差异（仅措辞，非规范问题）
+
+根无效（目录被删/移走）时的警告框：本插件标题用动作名（`Configure Branches`）、正文
+"The working copy root is not available: {0}"；原版标题是 "Can not Invoke {0}"、正文
+"Invalid working copy root: {0}"。属**文案**差异，功能与交互一致；如需完全对齐可再加两个文案 key。
 
 ### 2026-10-21 原版化 + 显式搜索框（第五轮 · **已实施**）
 

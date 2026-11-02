@@ -110,7 +110,7 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
   <li>Initial release.</li>
   <li>Entry point: a permanent <b>Enhance Merge</b> tab in the <i>Version Control</i> tool window,
       next to <i>Subversion Working Copies Information</i>. It lists the working copies of the project
-      and offers <i>Cleanup</i> and <i>Merge From…</i> for each of them.</li>
+      and offers <i>Cleanup</i>, <i>Configure Branches</i> and <i>Merge From…</i> for each of them.</li>
   <li>Revision picking in the built-in dialog's layout, with a keyword search box on top of the
       list, paging (+100 / +500), inline diff (Ctrl+D) and per-revision merge status.</li>
   <li>Only revisions of the <b>source branch itself</b> are listed. The built-in dialog also lists
@@ -126,7 +126,7 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
 <ul>
   <li>首个版本。</li>
   <li>入口：<i>版本控制</i>工具窗中的常驻 <b>增强合并</b> 标签页（与「Subversion 工作副本信息」并列），
-      列出项目的工作副本，每个工作副本提供「清理」与「合并自…」。</li>
+      列出项目的工作副本，每个工作副本提供「清理」「配置分支」与「合并自…」。</li>
   <li>逐版本勾选合并：沿用原版对话框布局，表格上方新增关键词搜索过滤框，
       分页加载（+100 / +500），内联差异（Ctrl+D），以及每个版本的合并状态图标。</li>
   <li>清单只含<b>源分支自身</b>的版本。内置对话框还会列出「合并进该分支的版本副本」，
@@ -143,7 +143,8 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
     <!--
       刻意**不**声明 <resource-bundle>：本插件的文案由 EnhanceMergeBundle 自行加载
       （语言包感知，见该类文档），不走平台的 DynamicBundle 解析；
-      声明它反而会让 EP 的 key= 绕开这套判定（见下方 applicationConfigurable 注释）。
+      声明它反而会让平台把 EP 的 key= 也交给 DynamicBundle（未装语言包时按操作系统语言解析），
+      破坏「按 IDE 语言包判定」的策略（见下方 applicationConfigurable 注释）。
     -->
 
     <!-- 最低兼容 IDEA 2022.1（build 221） -->
@@ -175,16 +176,29 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
           设置页（T9 / Spec R11）：Settings → Version Control → SVN Enhance Merge。
           应用级注册：与内置 Subversion 的 SvnConfigurable 同处 Version Control 分组，
           且 projectConfigurable 的实例由平台无参构造、拿不到 Project 句柄（见 EnhanceMergeSettings 注释）。
-          **故意不写 key / displayName**：ConfigurableEP 只要带 key 或 displayName，
-          标题就由平台按 `<resource-bundle>` 解析（`ConfigurableWrapper.getDisplayName()` 里
-          EP 优先），走的是 DynamicBundle 的 `Locale.getDefault()` 逻辑——在"中文系统 + 英文 IDE
-          且未装语言包"的机器上会显示中文，与本插件其余界面的语言判定（EnhanceMergeBundle
-          的"语言包感知"）不一致。两个都不写时平台回退到 `Configurable.getDisplayName()`，
-          即我们自己的语言包感知实现，标题语言因此始终与对话框一致。
+
+          ⚠️ **必须写 displayName（或 key）**：2024+ 的平台在 `ConfigurableWrapper.getDisplayName()`
+          里发现 EP 既无 displayName 又无 key 时，会直接
+          `LOG.error(PluginException("No display name specified in plugin descriptor XML file
+          for configurable ..."))` → **打开「设置」对话框即报插件错误**（用户可见的红色报错）。
+          2022.1 同一段代码只打 DEBUG 日志，故旧版看不到这个坑。
+          两端字节码均已核对：2022.1 `ConfigurableWrapper.getDisplayName()`（app.jar）、
+          2026.2.3（intellij.platform.ide.impl.jar）。
+
+          ⚠️ **为什么用字面量 displayName，而不是 key + bundle**：
+          `key` 会让平台走 `ConfigurableEP.getDisplayName()` → `DynamicBundle.getResourceBundle(...)`，
+          其 locale 在**未安装语言包**时是 `Locale.getDefault()`（= 操作系统语言）。
+          本插件**自带** `messages/EnhanceMergeBundle_zh_CN.properties`，于是
+          「中文系统 + 英文 IDE 且未装语言包」的机器上，设置页标题会变成中文，
+          而插件其余界面仍是英文（我们的 `EnhanceMergeBundle` 对未知语言强制回退英文基包）→
+          同一插件两处语言不一致。
+          字面量 `displayName` 与语言无关，221–262 表现完全一致。
+          代价：中文 IDE 的设置树里该节点标题是英文产品名 "SVN Enhance Merge"（与插件 `<name>` 一致）。
         -->
         <applicationConfigurable
             parentId="vcs"
             id="com.weixf.svn.mergeenhance.settings"
+            displayName="SVN Enhance Merge"
             instance="com.weixf.svn.mergeenhance.settings.EnhanceMergeConfigurable"/>
         <applicationService serviceImplementation="com.weixf.svn.mergeenhance.settings.EnhanceMergeSettings"/>
     </extensions>

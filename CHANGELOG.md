@@ -6,6 +6,14 @@
 ## [Unreleased]
 
 ### 新增
+- **复刻原版「Configure Branches」（2026-11-01）**：工作副本信息块新增 **Configure Branches** 链接
+  （位置与原版一致：Cleanup 之后、Merge From… 之前），动作复用内置插件**公开**的
+  `BranchConfigurationDialog.configureBranches(project, root)`——弹出的就是内置插件自己的分支配置对话框。
+  此前「不复刻」的理由（依赖 internal 的 `SvnBranchConfigurationManager`）并不成立：该入口是 public static。
+  已核验 IDEA 2022.1 / 2022.3 / 2023.3 / 2024.3 / 2025.3 / 2026.1 / 2026.2 各版本对应的
+  Subversion 插件（含 2026 起需自行安装的 Marketplace 版）里该方法均为
+  `public static void configureBranches(Project, VirtualFile)`，签名与可见性全程零变化，
+  零内部 API、零反射；官方 Plugin Verifier 对 IC-221 与 IC-262 均判 Compatible。
 - **勾选正确性与性能整改（第八轮，2026-10-22）**：修复继承自既有版本的合并集合正确性与性能问题——
   - **【正确性】勾选集合的数据源从「当前过滤视图」改为「已加载全集」**：此前过滤会把过滤前勾选的修订
     **静默剔除**出合并集合（勾选框仍显示「已勾」）；语义抽到纯逻辑 \RevisionSelection\ 并加 7 个回归单测。
@@ -49,6 +57,26 @@
 - 界面文案英文 + 简体中文，按 IDE 语言包状态自动切换。
 
 ### 变更
+- **修复打开「设置」对话框即报插件内部错误**（2026-11-01，用户报障）：
+  `PluginException: No display name specified in plugin descriptor XML file for configurable
+  com.weixf.svn.mergeenhance.settings.EnhanceMergeConfigurable`。
+  根因：2024+ 的平台 `ConfigurableWrapper.getDisplayName()` 发现 EP 既无 `displayName` 又无 `key` 时
+  会 `LOG.error(PluginException(...))`（2022.1 同一段代码只打 DEBUG 日志，故旧版看不到）。
+  修复：EP 改写字面量 `displayName="SVN Enhance Merge"`。
+  ⚠️ **不用 `key`**：那会让平台按 `DynamicBundle` 解析（未装语言包时 = 操作系统语言），
+  与本插件「按 IDE 语言包判定、对未知语言强制回退英文」的语言策略冲突
+  （中文系统 + 英文 IDE 时设置页标题会变中文、其余界面仍是英文）。
+  新增 `PluginDescriptorTest`（3 例）守护：Configurable 的 EP 必须有 `displayName` 或 `key`、
+  plugin.xml 不含 IDEA 2022.1 不认识的元素、`since-build` 与 `<depends>` 齐全。
+- **WC Info 面板与原版逐像素对齐**（2026-11-01）：修复在「Subversion Working Copies Information」
+  与「Enhance Merge」两个标签页之间切换时**内容跳位 2px** 的问题。
+  根因：本插件的 `WcInfoPanel`（= 平台 `HtmlPanel` = `JEditorPane`）保留了 Swing 默认的
+  `BasicBorders.MarginBorder(3,3,3,3)`，而原版 svn4idea 在 `CopiesPanel.updateList()` 里
+  显式 `setBorder(null)` 抹掉了它 → 本插件整块内容右移/下移 3px（叠加工具栏宽度差 1px 后净差 2px）。
+  现已在 `WcInfoPanel` 中 `border = null` + `isFocusable = true`，并在 `updateUI()` 里复清
+  （切主题会重新装上该边框；原版切主题后会漂 3px，属原版缺陷，不照抄）。
+  同时把「Cleanup / Configure Branches / Merge From…」三行统一收进 `!hasError()` 分支，
+  与原版 `UiBuilder.build()` 的行结构完全一致（此前出错的工作副本会多出一个无意义的 Cleanup 行）。
 - **本地化改为零反射**（2026-11-01）：`EnhanceMergeBundle` 不再用反射探测"是否装了语言包"，
   改用**公开 API** `DynamicBundle.getLocale()`（2022.1 与 2026.2.3 均为 `public static`，
   返回**语言包语言**而非操作系统语言）。本插件由此**彻底零反射**（源码里已无 `reflect` 字样）。
