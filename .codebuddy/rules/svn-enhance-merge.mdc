@@ -356,6 +356,18 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - 耗时 / IO（svn log、mergeinfo）一律 `Task.Backgroundable`（可取消）或 `executeOnPooledThread`。
 - **所有异步回调**（`Task.onSuccess/onThrowable/onFinished`、`invokeLater` 块）必须判
   `isDisposed || project.isDisposed`；`invokeLater` 的判定要写在 **lambda 内**（排队期间对话框可能已被关闭）。
+- **⛔ `invokeLater` 禁用 `ModalityState.any()`**（2026-11-03 实测踩坑，已修 `MergeExecutor`）：
+  `any()` 返回的是独立实例 `AnyModalityState.ANY`，**从未**被登记进 TransactionGuard 的
+  write-safe 模态表（`TransactionGuardImpl` 构造时只登记 `ModalityState.NON_MODAL`；
+  `enteredModality()` 只在进入**模态**时被调用）→ `isWriteSafeModality(any())` 恒为 **false**
+  → `wrapLaterInvocation` 走「**不授予写权限**」分支 → 任务里做任何写操作都会触发平台
+  `LOG.error("Write-unsafe context! … (not \"any\")")`（`FileDocumentManager.saveAllDocuments()`
+  开头就 `TransactionGuard.assertWriteActionAllowed()`），且异常分析器按栈把责任归到本插件。
+  **正确写法**：**已在 EDT 就直接执行**；确需切回 EDT 时用 `ModalityState.NON_MODAL`
+  （或 `defaultModalityState()`——在 EDT 上取当前模态态，无模态时即 `NON_MODAL`），
+  两者恒为 write-safe；`NON_MODAL` 还会在模态对话框打开期间**推迟执行**，语义更安全。
+  ⚠️ 该断言**只记录不抛异常**（字节码确认，`saveDocuments` 继续往下走）→ 功能不受影响，
+  但会被 `verifyOnIde` 的「插件 ERROR 扫描」判为失败、也会被上报 JetBrains。
 - 跨线程共享状态：`mergeStatusMap` 用 `ConcurrentHashMap`；`mergeCheckerPrepared` 用 `@Volatile` +
   `mergeCheckerLock` 互斥，保证 `prepare()` 只执行一次（`OneShotMergeInfoHelper` 缓存只能初始化一次）。
 - 资源释放：Timer / messageBus 订阅 / 注入到别人容器里的组件，都要在 dispose 时清理；
@@ -878,6 +890,13 @@ TortoiseSVN 的 `LogDlg` 里，**搜索/过滤从不触发服务器请求**：`m
   `PluginDescriptorTest` 3→4 例）；`buildPlugin` BUILD SUCCESSFUL（Kotlin 编译零告警）；
   `runPluginVerifier` / `verifyOnIde` 本轮未重跑——改动只涉及插件自身的设置层与 `plugin.xml`
   的 EP 注销，未触碰任何 svn4idea API 调用面，兼容结论沿用上一轮。）
+  （**2026-11-03 修复「Write-unsafe context!」后重跑**：`test` **63 用例 0 失败**；
+  `buildPlugin` BUILD SUCCESSFUL（zip 130,537 B，Kotlin 编译零告警，字节码仍 **major 55**）；
+  `verifyOnIde "-PideaVersion=2022.1" "-PverifyTimeout=600" "-PverifyAutoClose=true"` → **PASS（0 issues）**
+  （沙箱就绪耗时 ~430s，属「verifyOnIde 超时陷阱」里的负载型慢，非插件问题）；
+  产物字节码已确认**不再引用 `ModalityState.any`**、改为引用 `NON_MODAL`；
+  `runPluginVerifier` 本轮未重跑——改动只涉及插件自身的线程调度，未触碰 svn4idea API 调用面，
+  兼容结论沿用上一轮。）
 
 - **PowerShell 调用 gradlew 的坑**：`-PideaVersion=2022.1` 这类含点号的参数必须加引号
   （`"-PideaVersion=2022.1"`），否则会被 PowerShell 拆成 `-PideaVersion=2022` + `.1`，报 `Task '.1' not found`。

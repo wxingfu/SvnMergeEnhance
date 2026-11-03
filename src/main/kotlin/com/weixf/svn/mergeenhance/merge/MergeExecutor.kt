@@ -47,19 +47,44 @@ object MergeExecutor {
         // 修订选择对话框重复。LocalChangesPromptTask 只从宿主取 MergeContext/Interaction，
         // 是复刻前置步骤的最小代价。
         val quickMerge = QuickMerge(context, QuickMergeInteractionImpl(context))
-        // ⚠️ 回调**必须回到 EDT**（2026-11-01 修复 P1-3）：
+        // ⚠️ 回调必须回到 EDT（2026-11-01 修复 P1-3）：
         // `LocalChangesPromptTask` 在「搁置(shelve)」分支里是在**后台任务**中调用本回调的，
         // 而 `merge()` 会执行 `saveAllDocuments()` 与 `SvnIntegrateChangesTask.queue()`——
         // 两者都要求在 EDT 调用。
+        //
+        // ⚠️ 切回 EDT 时**禁止用 `ModalityState.any()`**（2026-11-03 修复，见下方长注释）。
         val callback = Runnable {
-            ApplicationManager.getApplication().invokeLater(
-                {
-                    if (context.project.isDisposed) return@invokeLater
-                    merge(context, selected)
-                },
-                ModalityState.any(),
-                context.project.disposed,
-            )
+            val app = ApplicationManager.getApplication()
+            if (app.isDispatchThread) {
+                // 已在 EDT：直接执行。原版 `LocalChangesPromptTask.processIntersection` 的
+                // `continueMerge` 分支就是在 EDT 同步调用本回调的（`selectLocalChangesAction`
+                // 的模态对话框返回后），此时仍处于外层 `invokeLater(defaultModalityState)`
+                // 这个 **write-safe** 任务的调用栈内（TransactionGuard 已授予写权限），
+                // 故 `saveAllDocuments()` 不会触发平台的 "Write-unsafe context" 断言。
+                if (!context.project.isDisposed) merge(context, selected)
+            } else {
+                // 后台线程（`LocalChangesPromptTask` 的 shelve/搁置分支在 `runInBackground` 里回调）：
+                // 必须切回 EDT 才能执行 `saveAllDocuments()` 与 `SvnIntegrateChangesTask.queue()`。
+                //
+                // ⚠️ modality 必须给 **write-safe** 的状态，**禁用 `ModalityState.any()`**：
+                // `any()` 返回的是独立实例 `AnyModalityState.ANY`，它**从未**被登记进
+                // TransactionGuard 的 write-safe 模态表（`TransactionGuardImpl` 构造时只登记了
+                // `ModalityState.NON_MODAL`，`enteredModality()` 只在进入**模态**时被调用）→
+                // `isWriteSafeModality(any())` 恒为 false → `wrapLaterInvocation` 走「不授予写权限」
+                // 分支 → 任务里调 `saveAllDocuments()` 会触发平台
+                // `LOG.error("Write-unsafe context! ... (not \"any\")")`（2026-11-03 实测复现）。
+                // `NON_MODAL` 恒为 write-safe，语义也正确：模态对话框打开期间会推迟执行，
+                // 避免在模态中启动合并。
+                app.invokeLater(
+                    {
+                        // 过期判定写在 lambda 内：排队期间项目可能已被关闭。
+                        if (context.project.isDisposed) return@invokeLater
+                        merge(context, selected)
+                    },
+                    ModalityState.NON_MODAL,
+                    context.project.disposed,
+                )
+            }
         }
 
         ApplicationManager.getApplication().invokeLater(
@@ -99,6 +124,11 @@ object MergeExecutor {
      * `saveAllDocuments()` 的原因：编辑器里有未落盘改动时，svn 看到的仍是旧内容，
      * 合并会产生"看似无冲突却覆盖了用户刚写的代码"或反向丢失。原版 `QuickMerge.execute`
      * 第一步就是它。
+     *
+     * ⚠️ 调用方必须保证这是 **write-safe 上下文**（EDT + 非 `ModalityState.any()` 的模态态）：
+     * `saveAllDocuments()` 内部第一件事就是 `TransactionGuard.assertWriteActionAllowed()`，
+     * 在写不安全上下文里会打出平台 ERROR「Write-unsafe context! … (not "any")」，
+     * 并被 IDE 的异常分析器归因到本插件（2026-11-03 实测）。
      */
     fun merge(context: MergeContext, selected: List<SvnChangeList>) {
         if (selected.isEmpty()) return

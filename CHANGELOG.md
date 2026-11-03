@@ -160,6 +160,17 @@
   - 加载器 `LogPageLoader` 简化为**单通道游标分页**（删除按日期的服务端查询模式），并引入"世代号"机制：过滤条件变化时旧的在飞加载任务立即作废、连一次请求都不发，杜绝旧条件数据串进新缓冲。
 
 ### 修复
+- **【修复】合并时弹出平台错误「Write-unsafe context!」（2026-11-03）**：点击「合并」后 IDE 弹出红色错误
+  `Write-unsafe context! Model changes are allowed from write-safe contexts only …`
+  （异常分析器按栈把责任归到本插件）。
+  - **根因**：2026-11-01 的「合并回调统一回 EDT」修复把回调改成了
+    `invokeLater(..., ModalityState.any(), ...)`。`any()` 是独立实例 `AnyModalityState.ANY`，
+    从未被登记进 TransactionGuard 的 write-safe 模态表 → 平台对该任务**不授予写权限** →
+    回调里的 `FileDocumentManager.saveAllDocuments()` 触发
+    `TransactionGuard.assertWriteActionAllowed()` 报错（javap 实测 2022.1 / 2026.2.3 字节码一致）。
+  - **修复**：改为「**已在 EDT 就直接执行**；否则 `invokeLater(..., ModalityState.NON_MODAL, ...)`」，
+    两条路径都落在 write-safe 上下文内。
+  - **影响**：该断言只记录不抛异常，合并本身正常执行；修复后不再产生平台 ERROR。
 - **【修复】分页**静默丢修订**（2026-11-01，上架前代码审查 P0）**：
   - **根因**：「CHANGE_BEFORE」的区间**含端点**——带游标请求时，游标那条修订会**重复**出现在结果里。
     原版 `MergeCalculatorTask.getChangeLists` 对此有明确处理（请求 `size + 2` 并**显式剔除**
