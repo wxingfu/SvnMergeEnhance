@@ -242,7 +242,8 @@ SvnMergeEnhance/
     ├── EnhanceMergeBundleTest.kt        # 文案 bundle 3 用例（基包 / _zh_CN / 缺键回退）
     ├── BundleKeysTest.kt                # 文案 key 对齐 6 用例（中英一致 / 非空 / 各功能 key / 「+N」文案占位符）
     ├── PluginDescriptorTest.kt          # 插件描述文件 4 用例（未注册 Configurable / 若注册必须有 displayName 或 key / 无 2022.1 不认的元素 / since-build 与 depends）
-    └── WorkingCopyRefreshWiringTest.kt  # 工作副本刷新接线 3 用例（订阅 ROOTS_RELOADED / 刷新按钮重扫根 / 禁用 ModalityState.any）
+    ├── WorkingCopyRefreshWiringTest.kt  # 工作副本刷新接线 3 用例（订阅 ROOTS_RELOADED / 刷新按钮重扫根 / 禁用 ModalityState.any）
+    └── MergeChangelistWiringTest.kt     # 合并链路接线 5 用例（含原版 MergeTask / 三步顺序 / 禁用 QuickMerge 流程方法）
 ```
 
 ---
@@ -316,7 +317,7 @@ SvnMergeEnhance/
 
 ## 测试
 
-### 纯逻辑单元测试（66 用例，不连仓库）
+### 纯逻辑单元测试（71 用例，不连仓库）
 
 ```bash
 ./gradlew.bat test
@@ -333,6 +334,7 @@ SvnMergeEnhance/
 | `BundleKeysTest` | 6 | 文案 key：中英包集合一致、取值非空、搜索框 key、标签页 key、合并方式弹窗 key、**「+N」按钮文案含 `{0}` 占位符** |
 | `PluginDescriptorTest` | 4 | 插件描述文件：**未注册任何 `Configurable`**（设置功能已移除）、若将来重新注册则 EP 必须有 `displayName` 或 `key`（2024+ 平台缺省会抛 `PluginException`，打开设置对话框即报插件错误）、不含 IDEA 2022.1 不认识的元素（`license`/`support`/`privacy-policy` → 插件加载失败）、`since-build` 与 `<depends>` 齐全 |
 | `WorkingCopyRefreshWiringTest` | 3 | 工作副本刷新接线（静态校验源码）：**订阅 `SvnVcs.ROOTS_RELOADED`**（不订阅则分支切换后 URL 永不刷新）、刷新按钮调用 `invokeRefreshSvnRoots()`（`getAllWcInfos()` 只读缓存映射）、不使用 `ModalityState.any()`（平台会打 `Write-unsafe context!`） |
+| `MergeChangelistWiringTest` | 5 | 合并链路与原版一致（静态校验源码）：**跑原版 `MergeTask`**（合并前准备「记录本次合并内容」的活动变更列表，否则合并结果混进 Default Changelist）、三步顺序（本地改动提示 → `MergeTask` → `SvnIntegrateChangesTask`，且文档保存排在切列表之前）、**禁用 `QuickMerge` 流程方法**（只能当宿主）、合并动作经 `runOnEdt` 回 EDT |
 
 > 测试通过 `cursorSource` 注入点喂假数据，不连仓库；
 > `SvnChangeList` / `MergeContext` 用 mockk 只 stub 需要的 getter。

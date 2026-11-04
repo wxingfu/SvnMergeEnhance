@@ -10,6 +10,7 @@ import org.jetbrains.idea.svn.history.SvnChangeList
 import org.jetbrains.idea.svn.integrate.ChangeListsMergerFactory
 import org.jetbrains.idea.svn.integrate.LocalChangesPromptTask
 import org.jetbrains.idea.svn.integrate.MergeContext
+import org.jetbrains.idea.svn.integrate.MergeTask
 import org.jetbrains.idea.svn.integrate.QuickMerge
 import org.jetbrains.idea.svn.integrate.QuickMergeInteractionImpl
 import org.jetbrains.idea.svn.integrate.SvnIntegrateChangesTask
@@ -18,11 +19,22 @@ import org.jetbrains.idea.svn.integrate.WorkingCopyInfo
 /**
  * 真正执行合并，与原版 `QuickMerge` 流程保持一致：
  *
+ * ```
+ * LocalChangesPromptTask（合并前本地改动提示）
+ *   → MergeTask（准备「记录本次合并内容」的活动变更列表）★ 2026-11-04 补齐
+ *   → SvnIntegrateChangesTask（真正合并；进度条 / 冲突解决 / 结果展示全部由原版负责）
+ * ```
+ *
  * - [mergeWithLocalChangesPrompt] 复刻原版「合并前本地改动提示」——直接复用原版
  *   [LocalChangesPromptTask]（以临时实例化的 [QuickMerge] + [QuickMergeInteractionImpl] 作为宿主，
  *   仅用于提供 `MergeContext` / `Interaction` / `runInBackground`，**不调用** QuickMerge 的合并流程方法）；
  *   LocalChangesPromptTask 会检查工作副本本地改动与待合并版本路径的交集，弹出原版对话框让用户选择
  *   继续 / 搁置 / 查看 / 取消，与原版完全一致。
+ * - **中间一步 [MergeTask]**（原版 `QuickMerge.merge` 链路里原本就有，本插件此前**漏掉了**）：
+ *   它在合并前准备一个**空的活动变更列表**（名字 = 原版的 `Merge from <分支>`），合并产生的文件落在其中；
+ *   若已存在同名且**有文件**的变更列表，则新建 `Merge from <分支> (1)` 并设为活动列表。
+ *   漏掉这一步的后果：合并结果会混进用户**当前**的活动变更列表（如 Default Changelist），
+ *   与原版行为不一致（用户看不到一个独立的「本次合并」列表）。
  * - 用户确认后（或本地无交集时）回调 [merge]，直接 `queue` 原版 [SvnIntegrateChangesTask]
  *   （构造参数对齐原版 `newIntegrateTask`）。进度条、冲突解决、结果展示全部由原版负责，不额外弹窗。
  */
@@ -41,18 +53,45 @@ object MergeExecutor {
     fun mergeWithLocalChangesPrompt(context: MergeContext, selected: List<SvnChangeList>) {
         if (selected.isEmpty()) return
 
-        // 仅作为 LocalChangesPromptTask 的宿主，不触发 QuickMerge 的合并流程。
+        // 仅作为 LocalChangesPromptTask / MergeTask 的宿主，不触发 QuickMerge 的合并流程。
         // 为什么不直接调 QuickMerge.merge/execute：那会连同它内部的 MergeTask 信号量包装、
         // selectMergeVariant（弹它自己的合并方式对话框）等整套流程一起启动，与本插件自己的
-        // 修订选择对话框重复。LocalChangesPromptTask 只从宿主取 MergeContext/Interaction，
+        // 修订选择对话框重复。这两个 Task 只从宿主取 MergeContext/Interaction，
         // 是复刻前置步骤的最小代价。
         val quickMerge = QuickMerge(context, QuickMergeInteractionImpl(context))
+
+        // 真正执行合并的动作（由 MergeTask 在变更列表就绪后回调触发）
+        val mergeAction = Runnable { merge(context, selected) }
+
+        // 原版链路：LocalChangesPromptTask → MergeTask → SvnIntegrateChangesTask
+        // （原版见 `QuickMerge.merge(title, mergerFactory, changeLists)`）
+        val afterLocalChangesPrompt = Runnable {
+            if (context.project.isDisposed) return@Runnable
+
+            // ① 先保存文档（对齐原版 `QuickMerge.execute()` 的第一步）。
+            //    ⚠️ 必须排在「切换活动变更列表」**之前**：保存产生的本地修改应落到用户
+            //    **原有**的活动变更列表里（原版顺序：saveAllDocuments → MergeTask → 合并）；
+            //    若先切列表，保存产生的修改就会混进新建的合并列表。
+            //    此处是 write-safe 上下文（见下方 runOnEdt 的说明），`saveAllDocuments()`
+            //    内部的 `TransactionGuard.assertWriteActionAllowed()` 不会报「Write-unsafe context!」。
+            FileDocumentManager.getInstance().saveAllDocuments()
+
+            // ② 再跑原版 MergeTask：查找/创建并**激活**用于记录本次合并内容的变更列表，
+            //    变更列表模型刷新完毕后才真正合并。
+            try {
+                MergeTask(quickMerge, Runnable { runOnEdt(context, mergeAction) }).run()
+            } catch (e: Exception) {
+                // 变更列表只是「记录」手段，失败不应阻断合并——否则表现为「点了合并，什么也没发生」。
+                // 原版此处的异常同样只进日志（平台会把未捕获异常记成插件内部错误，故这里 catch 住）。
+                LOG.warn("Failed to prepare the change list for merge", e)
+                runOnEdt(context, mergeAction)
+            }
+        }
+
         // ⚠️ 回调必须回到 EDT（2026-11-01 修复 P1-3）：
         // `LocalChangesPromptTask` 在「搁置(shelve)」分支里是在**后台任务**中调用本回调的，
-        // 而 `merge()` 会执行 `saveAllDocuments()` 与 `SvnIntegrateChangesTask.queue()`——
-        // 两者都要求在 EDT 调用。
-        //
-        // ⚠️ 切回 EDT 时**禁止用 `ModalityState.any()`**（2026-11-03 修复，见下方长注释）。
+        // 而后续要执行 `saveAllDocuments()`、`MergeTask`（变更列表模型写入）与
+        // `SvnIntegrateChangesTask.queue()`——都要求在 EDT 调用。
         val callback = Runnable {
             val app = ApplicationManager.getApplication()
             if (app.isDispatchThread) {
@@ -61,7 +100,7 @@ object MergeExecutor {
                 // 的模态对话框返回后），此时仍处于外层 `invokeLater(defaultModalityState)`
                 // 这个 **write-safe** 任务的调用栈内（TransactionGuard 已授予写权限），
                 // 故 `saveAllDocuments()` 不会触发平台的 "Write-unsafe context" 断言。
-                if (!context.project.isDisposed) merge(context, selected)
+                if (!context.project.isDisposed) afterLocalChangesPrompt.run()
             } else {
                 // 后台线程（`LocalChangesPromptTask` 的 shelve/搁置分支在 `runInBackground` 里回调）：
                 // 必须切回 EDT 才能执行 `saveAllDocuments()` 与 `SvnIntegrateChangesTask.queue()`。
@@ -79,7 +118,7 @@ object MergeExecutor {
                     {
                         // 过期判定写在 lambda 内：排队期间项目可能已被关闭。
                         if (context.project.isDisposed) return@invokeLater
-                        merge(context, selected)
+                        afterLocalChangesPrompt.run()
                     },
                     ModalityState.NON_MODAL,
                     context.project.disposed,
@@ -118,22 +157,43 @@ object MergeExecutor {
     }
 
     /**
+     * 在 **EDT + write-safe 上下文**执行 [action]。
+     *
+     * - 已在 EDT：直接执行（当前调用栈通常已在 write-safe 的 `invokeLater` 内）；
+     * - 否则：`invokeLater(..., ModalityState.NON_MODAL, project.disposed)`（恒 write-safe，
+     *   且会在模态对话框打开期间推迟执行）。
+     *
+     * 为什么需要它：`MergeTask` 内部通过
+     * `ChangeListManager.invokeAfterUpdateWithProgress(...)` 回调合并动作，
+     * 该回调**不一定**在 EDT 上触发（变更列表模型更新是异步的），
+     * 而 `SvnIntegrateChangesTask.queue()` 要求在 EDT 调用。
+     */
+    private fun runOnEdt(context: MergeContext, action: Runnable) {
+        val app = ApplicationManager.getApplication()
+        if (app.isDispatchThread) {
+            if (!context.project.isDisposed) action.run()
+        } else {
+            app.invokeLater(
+                {
+                    if (!context.project.isDisposed) action.run()
+                },
+                ModalityState.NON_MODAL,
+                context.project.disposed,
+            )
+        }
+    }
+
+    /**
      * 实际执行合并：对齐原版 `QuickMerge.newIntegrateTask`。
-     * 合并前 [FileDocumentManager.saveAllDocuments]，再直接 queue 原版 [SvnIntegrateChangesTask]。
      *
-     * `saveAllDocuments()` 的原因：编辑器里有未落盘改动时，svn 看到的仍是旧内容，
-     * 合并会产生"看似无冲突却覆盖了用户刚写的代码"或反向丢失。原版 `QuickMerge.execute`
-     * 第一步就是它。
-     *
-     * ⚠️ 调用方必须保证这是 **write-safe 上下文**（EDT + 非 `ModalityState.any()` 的模态态）：
-     * `saveAllDocuments()` 内部第一件事就是 `TransactionGuard.assertWriteActionAllowed()`，
-     * 在写不安全上下文里会打出平台 ERROR「Write-unsafe context! … (not "any")」，
-     * 并被 IDE 的异常分析器归因到本插件（2026-11-03 实测）。
+     * ⚠️ 文档保存（`FileDocumentManager.saveAllDocuments`）**不在这里**，而在
+     * [mergeWithLocalChangesPrompt] 的回调里、`MergeTask` **之前**完成——与原版
+     * `QuickMerge.execute()` 的顺序一致（先保存文档，再切活动变更列表，最后合并）。
+     * 这里若再保存一次，一旦本方法被调用的上下文不是 write-safe，就会触发平台
+     * 「Write-unsafe context!」错误（2026-11-03 实测）。
      */
     fun merge(context: MergeContext, selected: List<SvnChangeList>) {
         if (selected.isEmpty()) return
-
-        FileDocumentManager.getInstance().saveAllDocuments()
 
         // 参数含义（与 SvnIntegrateChangesTask 构造器对齐）：
         // - vcs：当前项目的 SvnVcs，决定用哪个 SVN 后端（命令行/SVNKit）与凭据

@@ -170,6 +170,27 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 **排查超时先看 `idea.log` 里 `EnhanceMerge i18n` 就绪行是否已出现**（出现=只是慢，加大
 `-PverifyTimeout=600` 重跑即可）；确属插件错误时该行缺失且日志有 ERROR。
 
+### 沙箱目录状态陈旧 → IDE 启动挂起（2026-11-04 实测，**与插件无关**）
+
+**症状**：`verifyOnIde` 跑满 600s 仍超时（exit code 2）；`build/tmp/runide-<ver>.log` 里
+`> Task :runIde FAILED` + `finished with non-zero exit value -1`；**`build/idea-sandbox/system/log/idea.log`
+根本不存在**（说明 IDE 还没走到写日志就挂住了）；无残留 `*idea-sandbox*` java 进程。
+
+**根因**：沙箱目录 `build/idea-sandbox` 状态陈旧/损坏（上次沙箱被强杀，留下的
+`system/port`、`system/port.lock`、`system/token`、`system/.pid` 与缓存不一致），
+IDE 启动时卡死（`-Xmx750m` + 状态不一致），表现为「进程在、但永远不 ready」。
+
+**处置（已验证有效，优先于 `git stash` A/B 对照）**：
+```powershell
+Remove-Item -Recurse -Force build\idea-sandbox     # 清空沙箱（IPGP 会重建，纯 build 目录，可安全删）
+./gradlew.bat verifyOnIde "-PideaVersion=2022.1" "-PverifyTimeout=900" "-PverifyAutoClose=true"
+```
+实测：清空前连续两次 600s/900s 超时；清空后 **20s 就绪、PASS（0 issues）**。
+
+⚠️ 因此「`verifyOnIde` 超时」的第一嫌疑**不是**插件，而是沙箱状态；按此顺序排查：
+① 删 `build/idea-sandbox` 重跑 → ② 杀残留 `*idea-sandbox*` 进程 → ③ 看 `idea.log` 有无插件 ERROR
+→ ④ `git stash` 做「改动前/后」A/B 对照。
+
 ### 代码规范（官方插件开发规范，2026-10-18 全量审查后固化）
 
 **本项目现为「零反射」**：全部走公开 API（`JBUI`/`UIUtil`/平台组件），源码里连 `reflect` 字样都不剩。
@@ -313,6 +334,17 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - 上下文定位：`SvnVcs.getInstance(project)` + `getAllWcInfos()`，`destination = wcInfo.getRootInfo().getIoFile()`。
 - 合并执行本身由本插件 `MergeExecutor.merge` 负责（直接 `queue` 原版 `SvnIntegrateChangesTask`，对齐 `QuickMerge.newIntegrateTask`），**不得调用** `QuickMerge.execute/merge/mergeAll/selectMergeVariant` 等流程方法。
 - 「合并前本地改动提示」必须与原版一致：允许实例化 `QuickMerge` + `QuickMergeInteractionImpl` **仅作为** `LocalChangesPromptTask` 的宿主（提供 `MergeContext` / `Interaction` / `runInBackground`），然后 `LocalChangesPromptTask(quickMerge, selected, callback).run()`；`callback` 里调用本插件 `MergeExecutor.merge`。这是复刻原版 `QuickMerge.merge(List)` 的前置步骤，不视为「复用 QuickMerge 合并流程」。
+- **合并链路必须三步齐全（2026-11-04 补齐，勿再漏）**：原版 `QuickMerge.merge(title, mergerFactory, changeLists)` 是
+  `LocalChangesPromptTask` → **`MergeTask`** → `SvnIntegrateChangesTask`。
+  中间的 `MergeTask`（`setupDefaultEmptyChangeListForMerge()`）负责**在合并前准备一个专属于本次合并的活动变更列表**：
+  名字取 `MergeContext.getMergeTitle()`（= `Merge from <分支>`）；不存在同名列表则新建并设为**活动（默认）**列表；
+  同名列表**为空**则直接设为活动；同名列表**有文件**则加序号 `(" (1)")` 继续找。
+  漏掉它 → 合并结果混进用户当前的 Default Changelist（**静默偏离**：不报错，只是行为与原版不同）。
+  本插件以 `MergeTask(quickMerge, Runnable)`（**public**，2022.1 与最新版 svn4idea 签名一致）复用原版实现；
+  `MergeTask` 的回调经 `ChangeListManager.invokeAfterUpdateWithProgress` 触发、**不一定在 EDT** →
+  合并动作必须经 `runOnEdt` 切回 EDT（write-safe 的 `ModalityState.NON_MODAL`）。
+  ⚠️ 文档保存（`saveAllDocuments`）必须排在 `MergeTask` **之前**（对齐原版 `QuickMerge.execute()` 顺序），
+  否则「保存产生的本地修改」会混进新建的合并列表。
 
 ## 入口与包
 
@@ -415,14 +447,18 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - **已删除**（2026-11-02 移除设置页）：`settings/EnhanceMergeSettings`（applicationService）、
   `settings/EnhanceMergeConfigurable`（设置页 UI）——行为改为代码内常量，插件不再持久化任何配置
 
-单测（2026-11-04，工作副本刷新链路修复后）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
+单测（2026-11-04，合并链路补齐 `MergeTask` 后）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
 `EnhanceMergeBundleTest`(8) + `BundleKeysTest`(6) +
 `RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) + `PluginDescriptorTest`(4) +
-`WorkingCopyRefreshWiringTest`(3) = **66**
+`WorkingCopyRefreshWiringTest`(3) + `MergeChangelistWiringTest`(5) = **71**
 （2026-11-01 零反射改造后为 66：其中 `EnhanceMergeSettingsTest`(4) 随设置模块删除而移除，
 `PluginDescriptorTest` 由 3 例扩到 4 例——新增「未注册任何 Configurable」用例；
 2026-11-04 新增 `WorkingCopyRefreshWiringTest`(3)——守护「订阅 `SvnVcs.ROOTS_RELOADED` /
-刷新按钮调用 `invokeRefreshSvnRoots` / 禁用 `ModalityState.any()`」三条接线）。
+刷新按钮调用 `invokeRefreshSvnRoots` / 禁用 `ModalityState.any()`」三条接线；
+同日新增 `MergeChangelistWiringTest`(5)——守护「跑原版 `MergeTask` / 三步顺序 /
+禁用 `QuickMerge` 流程方法 / 合并动作回 EDT」）。
+⚠️ 这两个「接线测试」是**源码静态校验**：它们守护的「漏接线」属**静默偏离**（不报错、只是行为与原版不同），
+纯逻辑单测覆盖不到。断言前必须**滤掉注释行**（源码注释里会**提到**被禁/被要求的 API）。
 （旧文档里的 12 / 39 / 53 / 54 / 55 / 58 / 60 / 63 均已落后，以 **66** 为准；README 的「测试」章节已同步。）
 
 ### 2026-11-02 移除设置页，行为改为代码内固定默认值（**已实施**）

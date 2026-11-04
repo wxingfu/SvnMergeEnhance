@@ -160,6 +160,20 @@
   - 加载器 `LogPageLoader` 简化为**单通道游标分页**（删除按日期的服务端查询模式），并引入"世代号"机制：过滤条件变化时旧的在飞加载任务立即作废、连一次请求都不发，杜绝旧条件数据串进新缓冲。
 
 ### 修复
+- **【修复】合并前的活动变更列表处理与原版不一致（2026-11-04，用户报障）**：原版点「Merge Selected」后，
+  会在真正合并前准备一个**专属于本次合并的活动变更列表**（`Merge from <分支>`；若已存在同名且**有文件**的
+  变更列表，则新建 `Merge from <分支> (1)` 并设为活动），合并产生的文件落在其中；本插件此前
+  **跳过了这一步**，合并结果直接混进用户当前的活动变更列表（如 Default Changelist）。
+  - **根因**：原版链路是 `LocalChangesPromptTask → MergeTask → SvnIntegrateChangesTask`
+    （`QuickMerge.merge(title, mergerFactory, changeLists)`），本插件只复刻了首尾两步，
+    中间的 `MergeTask`（`setupDefaultEmptyChangeListForMerge()`）被漏掉——属**静默偏离**（不报错、只是行为不同）。
+  - **修复**：`MergeExecutor` 补上 `MergeTask` 这一步（复用原版**公开**的
+    `MergeTask(QuickMerge, Runnable)`，与 `LocalChangesPromptTask` 同样以 `QuickMerge` 为宿主）；
+    并把文档保存（`saveAllDocuments`）挪到 `MergeTask` **之前**（对齐原版 `QuickMerge.execute()` 的顺序），
+    使「保存产生的本地修改」仍落在用户**原有**的活动变更列表里。
+  - **线程**：`MergeTask` 的回调经 `ChangeListManager.invokeAfterUpdateWithProgress` 触发，**不一定在 EDT**，
+    故合并动作统一经 `runOnEdt` 切回 EDT（write-safe 的 `ModalityState.NON_MODAL`）。
+  - **回归**：新增 `MergeChangelistWiringTest`(5 例) 静态守护合并链路的接线与顺序。
 - **【修复】切换分支后「Enhance Merge」面板的 URL 不刷新（2026-11-04，用户报障）**：分支切换（或外部
   `svn switch`）后，本插件标签页里的 **URL 行仍显示旧分支地址**，而原版「Subversion Working Copies
   Information」面板会同步刷新——两个面板显示**不同的 URL**。
