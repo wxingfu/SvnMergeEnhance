@@ -8,6 +8,7 @@ import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
@@ -15,6 +16,8 @@ import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.panels.VerticalLayout
+import com.intellij.util.Consumer
+import com.intellij.util.messages.Topic
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.weixf.svn.mergeenhance.EnhanceMergeBundle
@@ -58,7 +61,8 @@ import java.util.concurrent.Future
  *
  * ## 生命周期
  *
- * 面板实现 [Disposable]，由 `EnhanceMergeTabContent.disposeContent` 释放；无子 Disposable，
+ * 面板实现 [Disposable]，由 `EnhanceMergeTabContent.disposeContent` 释放；
+ * 消息总线连接以面板自身为父 Disposable（`connect(this)`），面板 dispose 时自动断开，不泄漏；
  * 后台枚举任务的回调以 [isDisposed] / `project.isDisposed` 守卫。
  */
 class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(false, true), Disposable {
@@ -99,7 +103,7 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
         EnhanceMergeBundle.message("tab.refresh.roots"),
         AllIcons.Actions.Refresh,
     ) {
-        override fun actionPerformed(e: AnActionEvent) = refresh()
+        override fun actionPerformed(e: AnActionEvent) = refreshRoots()
     }
 
     init {
@@ -111,29 +115,77 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
         // （平台会打 WARN 提示，且该 WARN 因含插件名会被回归脚本判为 issue）
         toolbar.setTargetComponent(listContainer)
         setToolbar(toolbar.component)
-        refresh()
+
+        // 订阅「工作副本根已重载」事件（对齐原版 `CopiesPanel` 构造时的同名订阅）。
+        //
+        // 背景（2026-11-04 用户反馈「切换分支后本面板 URL 不刷新」）：
+        // svn4idea 把「工作副本根 → URL」的映射缓存在 `SvnFileUrlMappingImpl` 里，
+        // 只有在**重扫**根之后才会更新；重扫由 `SvnVcs.invokeRefreshSvnRoots()` 触发，
+        // 扫完通过 `SvnVcs.ROOTS_RELOADED` 广播（`notifyRootsReloaded`）。
+        // 分支切换（`svn switch` / 更新后根 URL 变化）正是走
+        // `NestedCopiesBuilder.bewareRoot → invokeRefreshSvnRoots → ROOTS_RELOADED` 这条链。
+        // 原版 `CopiesPanel` 订阅了该事件 → URL 立即刷新；
+        // 本插件此前**只在构造时 + 点刷新按钮**读 `getAllWcInfos()`（读缓存映射），
+        // 既不订阅事件、刷新按钮也不触发重扫 → 分支切换后 URL 长期不更新（= 本次修复的缺陷）。
+        //
+        // `connect(this)`：连接挂在面板自身的 Disposable 下，面板 dispose 时自动断开，不泄漏。
+        project.messageBus.connect(this).subscribe(ROOTS_RELOADED, Consumer<Boolean> { rootsChanged ->
+            // 与原版 `CopiesPanel.rootsReloaded` 一致：只有映射真的变了才重绘（false 只是收尾信号）
+            if (rootsChanged) refresh()
+        })
+
+        // 首次渲染：与原版 `CopiesPanel` 构造器同构（`rootsReloaded(true); refresh();`）——
+        // 先按当前映射渲染一次，再触发一次根重扫；重扫完成后由 ROOTS_RELOADED 事件再渲染一次。
+        // （否则面板在「映射尚未刷新」时创建，会一直显示旧 URL，直到下一次外部事件）
+        refreshRoots()
     }
 
     override fun dispose() {
-        // 中断在飞的枚举任务：`allWcInfos` 会触发 svn 探测，面板已销毁时不该继续跑
+        // 中断在飞的枚举任务：`allWcInfos` 会读根信息，面板已销毁时不该继续跑
         refreshTask?.cancel(true)
         refreshTask = null
-        // 无子 Disposable；只置位标志，后台回调据此作废
+        // 消息总线连接由 Disposer 作为子节点自动断开（connect(this)），此处只需置位标志，
+        // 让后台回调据此作废
         if (disposed) return
         disposed = true
     }
 
     // ------------------------------------------------------------ 枚举与渲染
 
-    /** 后台枚举工作副本并回 EDT 填充（`allWcInfos` 可能触发 svn 探测，不得在 EDT 同步执行）。 */
+    /**
+     * 「刷新」按钮（对齐原版 `CopiesPanel.refresh`）。
+     *
+     * 原版点刷新调的是 `SvnVcs.invokeRefreshSvnRoots()`——**重扫**工作副本根
+     * （重新探测每个根的真实 URL），扫完由 `ROOTS_RELOADED` 事件驱动面板重绘。
+     *
+     * ⚠️ 本插件此前直接读 `getAllWcInfos()`（**只读缓存映射**，不重扫），
+     * 于是「外部 `svn switch` / 分支切换」后即便连点刷新也刷不出新 URL——
+     * 因为缓存映射要等 svn4idea 自己重扫才会更新。现改为与原版同构：
+     * ① 先按当前映射快速重绘一次（用户立刻看到反馈）；
+     * ② 再触发真正的根重扫，重扫完成后由 `ROOTS_RELOADED` 事件再重绘一次（此时 URL 已是新的）。
+     *
+     * ⚠️ 绝不能把 `invokeRefreshSvnRoots()` 放进 [refresh]：那会形成
+     * 「重绘 → 重扫 → 事件 → 重绘 → 重扫…」的无限循环（事件回调也会触发重扫）。
+     */
+    private fun refreshRoots() {
+        // 快速路径：先按当前映射重绘
+        refresh()
+        // 慢路径：真正重扫根（重扫完成会广播 ROOTS_RELOADED → 再次重绘）
+        SvnVcs.getInstance(project)?.invokeRefreshSvnRoots()
+    }
+
+    /** 后台枚举工作副本并回 EDT 填充（`allWcInfos` 会读根信息，不得在 EDT 同步执行）。 */
     private fun refresh() {
-        if (project.isDisposed) return
+        if (isDisposed || project.isDisposed) return
         // 取消上一次未完成的枚举：避免并发探测同一批工作副本（也避免旧任务覆盖新结果）
         refreshTask?.cancel(true)
         val generation = ++refreshGeneration
         refreshTask = ApplicationManager.getApplication().executeOnPooledThread {
             val infos = try {
                 SvnVcs.getInstance(project)?.allWcInfos ?: emptyList()
+            } catch (e: ProcessCanceledException) {
+                // 取消（被更新的一次刷新取代 / 面板已销毁）→ 不再渲染，也不用记 WARN
+                throw e
             } catch (e: Exception) {
                 LOG.warn("Failed to enumerate working copies", e)
                 emptyList()
@@ -145,7 +197,10 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
                     if (isDisposed || project.isDisposed) return@invokeLater
                     applyWcInfos(infos)
                 },
-                ModalityState.any(),
+                // ⚠️ 必须用 write-safe 的模态态：`ModalityState.any()` 从未登记进 TransactionGuard 的
+                // write-safe 模态表 → 平台会打 "Write-unsafe context!" 错误（2026-11-03 同类问题）。
+                // `NON_MODAL` 恒 write-safe，且会在模态对话框打开期间推迟执行，语义更安全。
+                ModalityState.NON_MODAL,
                 project.disposed,
             )
         }
@@ -160,7 +215,9 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
                 }
             )
         } else {
-            infos.forEach { listContainer.add(buildBlock(it)) }
+            // 按路径排序（对齐原版 `CopiesPanel.setWorkingCopies` 的 `infoList.sort(comparing(WCInfo::getPath))`）
+            // —— 否则两个面板的工作副本**顺序**可能不一致，看起来像「没同步」
+            infos.sortedBy { it.path }.forEach { listContainer.add(buildBlock(it)) }
         }
         listContainer.revalidate()
         listContainer.repaint()
@@ -230,5 +287,18 @@ class EnhanceMergePanel(private val project: Project) : SimpleToolWindowPanel(fa
     private companion object {
         /** 工具条 place（同一容器内多个工具条用 place 区分）。 */
         const val TOOLBAR_PLACE = "SvnEnhanceMergeWorkingCopies"
+
+        /**
+         * `SvnVcs.ROOTS_RELOADED` 的**类型化视图**。
+         *
+         * svn4idea 声明为 `public static final Topic<Consumer>`（raw `Consumer`），
+         * Kotlin 侧只能拿到 `Topic<Consumer<*>>`，直接 `subscribe` 无法把回调参数定型成 `Boolean`；
+         * 这里做一次受控的 unchecked 转换（擦除后类型一致，跨 2022.1~2026.x 均成立：
+         * 2022.1 的 `com.intellij.util.Consumer` 只有抽象方法 `consume`，
+         * 2026 的多继承 `java.util.function.Consumer` 但 `accept` 是 default，抽象方法仍只有 `consume`）。
+         */
+        @Suppress("UNCHECKED_CAST")
+        private val ROOTS_RELOADED: Topic<Consumer<Boolean>> =
+            SvnVcs.ROOTS_RELOADED as Topic<Consumer<Boolean>>
     }
 }

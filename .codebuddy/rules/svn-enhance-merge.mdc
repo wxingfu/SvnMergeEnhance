@@ -415,11 +415,14 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 - **已删除**（2026-11-02 移除设置页）：`settings/EnhanceMergeSettings`（applicationService）、
   `settings/EnhanceMergeConfigurable`（设置页 UI）——行为改为代码内常量，插件不再持久化任何配置
 
-单测（2026-11-02，移除设置页后）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
+单测（2026-11-04，工作副本刷新链路修复后）：`LogFilterTest`(8) + `LogPageLoaderTest`(17) + `QuantitySelectionTest`(9) +
 `EnhanceMergeBundleTest`(8) + `BundleKeysTest`(6) +
-`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) + `PluginDescriptorTest`(4) = **63**
+`RevisionSelectionTest`(7) + `RevisionAccumulatorTest`(4) + `PluginDescriptorTest`(4) +
+`WorkingCopyRefreshWiringTest`(3) = **66**
 （2026-11-01 零反射改造后为 66：其中 `EnhanceMergeSettingsTest`(4) 随设置模块删除而移除，
-`PluginDescriptorTest` 由 3 例扩到 4 例——新增「未注册任何 Configurable」用例）。
+`PluginDescriptorTest` 由 3 例扩到 4 例——新增「未注册任何 Configurable」用例；
+2026-11-04 新增 `WorkingCopyRefreshWiringTest`(3)——守护「订阅 `SvnVcs.ROOTS_RELOADED` /
+刷新按钮调用 `invokeRefreshSvnRoots` / 禁用 `ModalityState.any()`」三条接线）。
 （旧文档里的 12 / 39 / 53 / 54 / 55 / 58 / 60 / 63 均已落后，以 **66** 为准；README 的「测试」章节已同步。）
 
 ### 2026-11-02 移除设置页，行为改为代码内固定默认值（**已实施**）
@@ -502,6 +505,58 @@ jstack 显示各线程池空闲、CPU 被抢占——不是死锁，也别去改
 无需启动 IDE：用平台 jar（`G:/GradleRepository/idea/ideaIC-2022.1/lib/*`）+ `app.jar` 里的
 `HtmlPanel` 写一个 headless 小程序，`paint()` 到 `BufferedImage` 后扫描深色像素即可测出文字落点；
 `p.getInsets()` / `p.getMargin()` / `p.getBorder()` 直接印证 `MarginBorder` 的来源。
+
+### 2026-11-04 工作副本列表的刷新链路（分支切换后 URL 自动刷新 · **已实施**）
+
+> 用户报障：「切换分支后【Enhance Merge】面板内的 URL 不会随分支切换自动刷新，没有与原插件的
+> 【Subversion Working Copies Information】同步刷新 URL」。
+
+#### 根因（**必须记住的链路**，勿再改坏）
+
+svn4idea 把「工作副本根 → URL」的映射**缓存**在 `SvnFileUrlMappingImpl` 里，只有**重扫**根才会更新：
+
+```
+分支切换 / svn update / 外部 svn switch
+  → NestedCopiesBuilder.bewareRoot（发现「根的真实 URL」与缓存映射不符）
+  → SvnVcs.invokeRefreshSvnRoots()（重扫根；public）
+  → SvnFileUrlMappingImpl.NewRootsApplier.apply() → runUpdateMappings() → notifyRootsReloaded()
+  → 广播 SvnVcs.ROOTS_RELOADED（project 级 Topic；public static final）
+  → ★ 面板必须订阅这个事件才会重绘 ★
+```
+
+- 原版 `CopiesPanel` 在**构造器**里就订阅了它：
+  `myProject.getMessageBus().connect().subscribe(SvnVcs.ROOTS_RELOADED, (Consumer<Boolean>)this::rootsReloaded)`，
+  且 `rootsReloaded(true)` → `doRefresh()`（后台枚举）→ `invokeLater(..., ModalityState.nonModal())` → 重绘；
+  `rootsReloaded(false)` 只收尾（映射没变，不重绘）。
+- 本插件此前**既没订阅事件、刷新按钮也只是读缓存映射**（`getAllWcInfos()` **不触发重扫**）
+  → 分支切换后 URL 长期不更新，**连点刷新也刷不出来**（两个面板 URL 不一致）。
+
+#### 本轮实施（`tab/EnhanceMergePanel.kt`）
+
+| 项 | 处理 |
+|---|---|
+| 订阅根重载事件 | `project.messageBus.connect(this).subscribe(ROOTS_RELOADED, Consumer<Boolean> { rootsChanged -> if (rootsChanged) refresh() })`；连接挂在**面板自身的 `Disposable`** 下（比原版的 `connect()` 不带 Disposable 更干净，面板 dispose 即断开） |
+| 刷新按钮 | 拆成 `refreshRoots()`：① `refresh()` 先按当前映射快速重绘；② 再 `SvnVcs.getInstance(project)?.invokeRefreshSvnRoots()` 触发**真正的根重扫**（重扫完成由事件再重绘一次，URL 此时已是新的） |
+| 面板构造 | 与原版构造器同构：先渲染 + 触发一次根重扫（否则面板在「映射尚未刷新」时创建会一直显示旧 URL） |
+| 模态态 | `invokeLater` 的 `ModalityState.any()` → `ModalityState.NON_MODAL`（`any()` 未登记进 TransactionGuard 的 write-safe 表 → 平台打 `Write-unsafe context!` 错误，见「线程与生命周期」） |
+| 清理 | `refresh()` 开头补 `isDisposed` 守卫，避免面板已销毁还起后台枚举任务 |
+
+#### ⚠️ 两条铁律
+
+1. **`invokeRefreshSvnRoots()` 只能出现在「用户显式刷新」与「面板构造」两条路径**，
+   **绝不能放进重绘方法**（`refresh()`）——否则形成
+   「重绘 → 重扫 → 事件 → 重绘 → 重扫…」的**无限循环**。
+2. `SvnVcs.ROOTS_RELOADED` 在 Java 侧声明为 raw `Topic<Consumer>`，Kotlin 侧只能拿到 `Topic<Consumer<*>>`；
+   本插件用一次受控的 unchecked 转换拿到 `Topic<Consumer<Boolean>>`（`com.intellij.util.Consumer` 在
+   2022.1 只有抽象方法 `consume`，2026 虽多继承 `java.util.function.Consumer` 但 `accept` 是 default，
+   **抽象方法仍只有 `consume`** → SAM 构造在两端都成立）。
+
+#### 回归
+
+- 新增 `WorkingCopyRefreshWiringTest`（3 例，**源码静态校验**）：守护「订阅 `ROOTS_RELOADED`」、
+  「刷新按钮调用 `invokeRefreshSvnRoots`」、「不使用 `ModalityState.any()`」。
+  （为什么用静态校验：这条链路横跨 svn4idea 三个组件 + 一次异步事件，纯逻辑单测覆盖不到；
+  且漏订阅**不会报错**，只是「数据陈旧」。）
 
 ### 2026-11-02 「Configure Branches」跨版本规范核验（结论：**合规**）
 

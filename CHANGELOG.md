@@ -160,6 +160,26 @@
   - 加载器 `LogPageLoader` 简化为**单通道游标分页**（删除按日期的服务端查询模式），并引入"世代号"机制：过滤条件变化时旧的在飞加载任务立即作废、连一次请求都不发，杜绝旧条件数据串进新缓冲。
 
 ### 修复
+- **【修复】切换分支后「Enhance Merge」面板的 URL 不刷新（2026-11-04，用户报障）**：分支切换（或外部
+  `svn switch`）后，本插件标签页里的 **URL 行仍显示旧分支地址**，而原版「Subversion Working Copies
+  Information」面板会同步刷新——两个面板显示**不同的 URL**。
+  - **根因**：svn4idea 把「工作副本根 → URL」的映射缓存在 `SvnFileUrlMappingImpl` 里，只有**重扫**根之后
+    才会更新；重扫由 `SvnVcs.invokeRefreshSvnRoots()` 触发，扫完通过 `SvnVcs.ROOTS_RELOADED` 广播。
+    分支切换走的正是 `NestedCopiesBuilder.bewareRoot → invokeRefreshSvnRoots → ROOTS_RELOADED` 这条链。
+    原版 `CopiesPanel` 在构造时订阅了该事件（`project.getMessageBus().connect().subscribe(SvnVcs.ROOTS_RELOADED, ...)`），
+    本插件**既没订阅事件、刷新按钮也只是读缓存映射**（`getAllWcInfos()` 不触发重扫）→ URL 长期不更新，
+    连点刷新也刷不出来。
+  - **修复**：① `EnhanceMergePanel` 订阅 `SvnVcs.ROOTS_RELOADED`（连接挂在面板自身的 `Disposable` 下，
+    不泄漏），收到「根映射已变」事件即重绘（与原版 `CopiesPanel.rootsReloaded` 同构）；
+    ② 刷新按钮改为先按当前映射快速重绘、再调用 `invokeRefreshSvnRoots()` 触发**真正的根重扫**
+    （重扫完成由事件再重绘一次）；③ 面板构造时同样先渲染 + 触发一次重扫（对齐原版构造器行为）。
+    ⚠️ `invokeRefreshSvnRoots()` **只放在刷新按钮/构造路径**，绝不能放进重绘方法，否则会形成
+    「重绘 → 重扫 → 事件 → 重绘 → 重扫…」的无限循环。
+  - **回归**：新增 `WorkingCopyRefreshWiringTest`(3 例) 静态守护三条接线（订阅 `ROOTS_RELOADED` /
+    刷新按钮调用 `invokeRefreshSvnRoots` / 不使用 `ModalityState.any()`）。
+- **【修复】工作副本列表刷新回调使用了 `ModalityState.any()`（2026-11-04）**：`any()` 从未登记进
+  TransactionGuard 的 write-safe 模态表 → 平台会打 `Write-unsafe context!` 错误
+  （与 2026-11-03 的合并回调同类）。已改为 `ModalityState.NON_MODAL`（恒 write-safe）。
 - **【修复】合并时弹出平台错误「Write-unsafe context!」（2026-11-03）**：点击「合并」后 IDE 弹出红色错误
   `Write-unsafe context! Model changes are allowed from write-safe contexts only …`
   （异常分析器按栈把责任归到本插件）。
