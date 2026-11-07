@@ -8,11 +8,12 @@
      没有这条 depends 时，插件会在 SVN 插件之前加载，运行期引用 svn4idea 类会 ClassNotFound。
   2. <depends>com.intellij.modules.vcs</depends>：声明 VCS 能力依赖，
      保证插件只在具备 VCS 框架的 IDE（IDEA 等）中加载，避免装进无 VCS 的轻量 IDE 后入口失效。
-  3. since-build="221" / until-build="262.*"：支持 IDEA 2022.1 – 2026.2.3。
+  3. since-build="221" / until-build="263.*"：支持 IDEA 2022.1 – 2026.3（263.7307.200）。
      until-build 是"已验证上限"而非"测试上限"：svn4idea 的 API 不在平台兼容承诺内，
-     2026.2.3 已用 `runPluginVerifier` 比对 IC-2022.1 / IC-2026.2.3 两端二进制 API（均 Compatible）后放开；
+     2026.3 已用 `runPluginVerifier` 比对 IC-2022.1 / IU-2026.3 两端二进制 API（均 Compatible）后放开；
+     2026.x 起 SVN 不再随发行版分发，用户须装官方 Subversion 插件（2026.3 对应 263.7307.216）。
      注：2026.x 无法用 verifyOnIde 做「重新编译 + 沙箱」回归（Kotlin 版本与 IPGP 1.x 均不支持 2026 平台），
-     更高版本（2026.3+）仍须先回归再提高，方法与依据见 README「兼容性说明」与
+     更高版本（2027.x+）仍须先回归再提高，方法与依据见 README「兼容性说明」与
      .codebuddy/rules 的 svn4idea API 兼容性基线。
  4. 文案一律由 EnhanceMergeBundle 自行加载（语言包感知：未装语言包强制英文基包，
      装了中文语言包才用 _zh_CN），**不**声明 `<resource-bundle>`——声明它会让平台改用
@@ -119,6 +120,7 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
   <li>Settings are built into the code: the first screen loads 100 revisions and the per-revision
       merge status is always calculated (no options to configure).</li>
   <li>English and Simplified Chinese UI, following the IDE language pack.</li>
+  <li>Compatible with IntelliJ IDEA 2022.1 – 2026.3 (Plugin Verifier: IC-221 / IU-263 both Compatible).</li>
 </ul>
 
 <h3>中文</h3>
@@ -134,6 +136,7 @@ e-mail: <a href="mailto:wxingfu@alu.uestc.edu.cn">wxingfu@alu.uestc.edu.cn</a>.
   <li>设置项已内置到代码：首屏固定加载 100 条修订，逐版本合并状态恒为计算中
       （不再提供可配置项）。</li>
   <li>界面提供英文与简体中文，随 IDE 语言包自动切换。</li>
+  <li>支持 IntelliJ IDEA 2022.1 – 2026.3（官方 Plugin Verifier 对 IC-221 / IU-263 均判定 Compatible）。</li>
 </ul>
     ]]></change-notes>
 

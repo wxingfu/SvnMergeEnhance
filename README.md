@@ -78,7 +78,7 @@ Enhance Merge 标签页（工作副本信息块列表）
 
 | 项 | 要求 |
 |---|---|
-| IDE | IntelliJ IDEA **2022.1 – 2026.2.3**（插件 `since-build=221` / `until-build=262.*`；2026.2.3 已回归验证，更高版本待验证后放开） |
+| IDE | IntelliJ IDEA **2022.1 – 2026.3**（插件 `since-build=221` / `until-build=263.*`；2026.3 已用官方 Plugin Verifier 回归验证，更高版本待验证后放开） |
 | VCS 插件 | **Subversion** 插件。⚠️ **IDEA 2026.x 起 JetBrains 已把 SVN 从发行版 unbundle**：2022.1–2025.x 自带；2026.x 需先从 Marketplace 安装 JetBrains 官方 **Subversion** 插件，否则本插件因 `<depends>Subversion</depends>` 无法加载 |
 | 构建 JDK | **JDK 11**（与 IDEA 2022.1 运行时 JBR 11 对齐；JDK 8 不可用） |
 | 构建工具 | Gradle 8.x（推荐使用仓库自带 wrapper） |
@@ -378,7 +378,7 @@ deprecation 会把构建卡死）。
 | 合并执行 | 完全走原版 `SvnIntegrateChangesTask`（含冲突解决与更新信息树） | — |
 | Unix 回归脚本 | `scripts/verify-plugin.sh` 已写好但未在 Linux/macOS 实跑 | 首次使用前人工执行一次确认 |
 | Kotlin stdlib 告警 | **已解决**：`gradle.properties` 设 `kotlin.stdlib.default.dependency=false`，stdlib 与 `annotations.jar` 不再打进 zip（由 IDEA 核心 `lib/3rd-party-rt.jar` 提供），安装包 2.10MB → 434KB | — |
-| IDEA 2026.x | JetBrains 已把 SVN 插件 unbundle，需用户自行从 Marketplace 安装官方 **Subversion** 插件 | 已在插件描述与本 README 标注；`until-build=262.*` 需随新版本滚动更新 |
+| IDEA 2026.x | JetBrains 已把 SVN 插件 unbundle，需用户自行从 Marketplace 安装官方 **Subversion** 插件 | 已在插件描述与本 README 标注；2026.3 对应 `Subversion 263.7307.216`；`until-build=263.*` 需随新版本滚动更新 |
 
 ---
 
@@ -389,7 +389,7 @@ deprecation 会把构建卡死）。
 | 项 | 值 | 说明 |
 |---|---|---|
 | `since-build` | `221` | IDEA 2022.1 |
-| `until-build` | `262.*` | IDEA 2026.2.3；已通过 Plugin Verifier 对 IC-2022.1 / IC-2026.2.3 两端的二进制 API 校验（Compatible），2026.3+ 待验证后放开 |
+| `until-build` | `263.*` | IDEA 2026.3（263.7307.200）；已通过 Plugin Verifier 对 IC-2022.1 / IU-2026.3 两端的二进制 API 校验（均 Compatible），2027.x+ 待验证后放开 |
 
 ### 兼容性依据（已逐项核对）
 
@@ -413,15 +413,23 @@ deprecation 会把构建卡死）。
      实测（`javap`）发现 **2026.2.3 上这两条路径都不存在** —— `findLanguageBundle()` 已被移除，
      `LocalizationUtil` 里根本没有这个方法 → 旧实现**在 2026.x 上恒返回 null**，
      语言包感知其实已静默失效（恒走英文）。
-     现改为**公开 API** `DynamicBundle.getLocale()`：它在 2022.1 与 2026.2.3 都是 `public static`
-     且语义一致（返回**语言包语言**，不是操作系统语言）→ 本插件现在**零反射**，
+     现改为**公开 API** `DynamicBundle.getLocale()`：它在 2022.1 / 2026.2.3 / 2026.3 都是
+     `public static` 且语义一致（返回**语言包语言**，不是操作系统语言）→ 本插件现在**零反射**，
      且 2026.x 上的语言跟随也一并修好。
-   - **SVN 插件不再内置**：Plugin Verifier 实测 2026.2.3 对应的是 Marketplace 上的
-     `Subversion 262.10968.211`。本插件声明 `<depends>Subversion</depends>`，
+   - **SVN 插件不再内置**：Marketplace `compatibleUpdates` 实测 2026.3（`IU-263.7307.200`）
+     对应的是 `Subversion 263.7307.216`（2026.2 为 `262.10968.211`），Plugin Verifier 在
+     IU-2026.3 上自动解析到该版本并完成比对。本插件声明 `<depends>Subversion</depends>`，
      因此在 2026.x 上需先安装官方 Subversion 插件（见「环境要求」）。
      所复用的 svn4idea 公开 API（`SelectBranchPopup` / `SvnCommittedChangesProvider` /
-     `SvnIntegrateChangesTask` / `OneShotMergeInfoHelper` 等 14 项）在 2022.1 与 2026.2.3 中
+     `SvnIntegrateChangesTask` / `OneShotMergeInfoHelper` 等 14 项）在 2022.1 / 2026.2.3 / 2026.3 中
      **签名完全一致**（已逐一 javap 比对，见上一节）。
+5. **IDEA 2026.3 校验结论（2026-11-07）**：`gradlew test`（71 用例）、`buildPlugin`、
+   `verifyPlugin` 全过；官方 Plugin Verifier 1.410 对 `IC-221.5080.210` 与 `IU-263.7307.200`
+   两端均判 **Compatible**（263 侧仅 4 处 deprecated：`ModalityState.NON_MODAL` ×3、
+   `ActionToolbar.updateActionsImmediately` ×1，仍可用、不阻断）。
+   平台侧 `DynamicBundle.getLocale()`、`changesViewContent` EP 的
+   `tabName` / `predicateClassName` / `displayNameSupplierClassName` 属性与 `postStartupActivity`
+   在 2026.3 SDK（`platform-vcs-plugin.jar` / `app.jar`）中均保持原样。
 
 ### 已知风险与回归方法
 
@@ -438,35 +446,43 @@ deprecation 会把构建卡死）。
     的 `split("=")[1]` 越界（`IndexOutOfBoundsException: Index: 1, Size: 1`）。
 
   因此 2026.x 的兼容性依据是 **Plugin Verifier**（它会自动按 IDE 版本解析并下载对应的
-  Marketplace 版 SVN 插件做二进制比对，结果 Compatible），而**入口链接注入与合并主流程
-  需要在真实 2026.2.3 里人工过一遍**。若要恢复 2026.x 的编译期回归能力，需迁移到
+  Marketplace 版 SVN 插件做二进制比对，结果 Compatible），而**常驻标签页入口与合并主流程
+  需要在真实 2026.3 里人工过一遍**。若要恢复 2026.x 的编译期回归能力，需迁移到
   IPGP 2.x + Kotlin 2.x（构建脚本大改，`intellij { }` / `runPluginVerifier` 配置均需重写）。
 - 一键回归验证（自动切 SDK 启动沙箱、轮询插件就绪、扫描插件异常日志并给出 PASS/FAIL）：
 
   ```bash
-  # Gradle 任务（跨平台，推荐）
-  ./gradlew verifyOnIde -PideaVersion=2026.2.3
+  # Gradle 任务（跨平台，推荐；2026.x 不可用，见下方说明）
+  ./gradlew verifyOnIde -PideaVersion=2025.2
 
   # 或直接调脚本
-  powershell -File scripts\verify-plugin.ps1 -Version 2026.2.3   # Windows
-  scripts/verify-plugin.sh --version 2026.2.3                    # Linux / macOS
+  powershell -File scripts\verify-plugin.ps1 -Version 2025.2   # Windows
+  scripts/verify-plugin.sh --version 2025.2                    # Linux / macOS
   ```
 
   默认保持 IDE 运行以便人工走主流程；`-PverifyAutoClose=true` / `--close-when-done` 则在检查结束后关闭。
   首次验证某个版本会先下载该版本 IDE，耐心等待（可用 `-PverifyTimeout=900` 放宽）。
+  ⚠️ **2026.x（含 2026.3）不能用本任务回归**：工具链限制见上一条，改用下面的 Plugin Verifier。
   实测通过后再提高 `until-build`。
 - 二进制 API 校验（官方 Plugin Verifier，比对插件与目标 IDE 的类/方法签名）：
 
   ```bash
-  # 自动下载支持范围两端（IC-2022.1 / IU-2026.2.3）。
-  # 两个坑：① 2026.x 必须写 IU（IDEA 2026 起 Community/Ultimate 合并，
-  #   code=IC 已 404）；② 两端一起下需约 8GB 磁盘，CI runner 会撑爆。
+  # 自动下载支持范围两端（IC-2022.1 / IU-2026.3）。
+  # 两个坑：① 2026.x 必须写 IU（IDEA 2026 起 Community/Ultimate 合并为统一发行版，
+  #   Data Services 已无独立 IC 条目）；② 两端一起下需约 8GB 磁盘，CI runner 会撑爆。
   # 需要只校验一端时用 -PverifierIdeVersions=IC-2022.1（CI 即采此法）
   ./gradlew runPluginVerifier
 
-  # 复用本机已解压的 SDK，不重复下载（逗号分隔多个目录）
-  ./gradlew runPluginVerifier "-PverifierLocalIde=G:/GradleRepository/idea/ideaIC-2022.1,G:/GradleRepository/idea/ideaIC-2026.2.3"
+  # 复用本机已解压的 IDE，不重复下载（逗号分隔多个目录）
+  ./gradlew runPluginVerifier "-PverifierLocalIde=G:/GradleRepository/idea/ideaIC-2022.1,C:/Users/<you>/.cache/pluginVerifier/ides/IU-2026.3"
   ```
+
+  ⚠️ **不要**把 `-PverifierLocalIde` 指向 Gradle 解压的 `ideaIC-2026.3`：它的 `build.txt`
+  是 `IC-263.7307.200`，而 Marketplace `compatibleUpdates` 对 `IC-263.*` **无结果**
+  （只有 `IU-263.*` / `IIU-263.*` 能查到 `Subversion 263.7307.216`）→ verifier 报
+  `(failed) Subversion: Unavailable`，进而把 31 个 `org.jetbrains.idea.svn.*` 类判为
+  unresolved，误报 `COMPATIBILITY_PROBLEMS`。**必须用 IU 统一发行版目录**
+  （或让 `-PverifierIdeVersions=IU-2026.3` 自动下载）。
 
 ---
 
@@ -596,6 +612,6 @@ curl -i -H "Authorization: Bearer $TOKEN" \
 - [x] 元数据齐全：`pluginIcon.svg` / `pluginIcon_dark.svg`（已在插件目录根部）、`<vendor>` 的 email 与 url、`<change-notes>`（已按当前入口重写）
 - [x] 分类 / 许可 / 支持 / 隐私 / 第三方许可：见上方「上架物料」表
 - [x] 许可说明：Apache-2.0，无第三方组件再分发（LGoodDatePicker 依赖已移除），`THIRD-PARTY-LICENSES.txt` 随包分发
-- [x] 兼容性：`runPluginVerifier` 对 `IC-2022.1` 与 `IC-2026.2.3` 结论均为 Compatible
+- [x] 兼容性：`runPluginVerifier` 对 `IC-2022.1` 与 `IU-2026.3` 结论均为 Compatible
 - [x] 人工走一遍真实合并（分支弹窗 → 合并方式 → 版本选择 → 勾选 → 合并）
 - [ ] 补 Marketplace 截图（标签页 + 修订选择对话框）

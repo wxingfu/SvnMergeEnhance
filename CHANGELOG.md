@@ -5,6 +5,23 @@
 
 ## [Unreleased]
 
+### 变更
+- **支持范围上限 2026.2.3 → IDEA 2026.3**（`until-build=262.*` → `263.*`，2026-11-07）：
+  - IDEA 2026.3 于 2026-11-05 发布（build `263.7307.200`）；Marketplace 配套插件为
+    `Subversion 263.7307.216`（`compatibleUpdates` 实测：`IU-263.*` / `IIU-263.*` 才查得到，
+    `IC-263.*` 无结果）。`build.gradle.kts` 按 IDE 版本自动选择 Marketplace 版 SVN 插件，
+    可用 `-PsvnMarketplaceVersion=<版本>` 覆盖；默认（2022.1）构建仍走内置 SVN。
+  - 官方 Plugin Verifier 1.410 对 `IC-221.5080.210` 与 `IU-263.7307.200` 两端均判
+    **Compatible**（263 侧 4 处 deprecated：`ModalityState.NON_MODAL` ×3、
+    `ActionToolbar.updateActionsImmediately` ×1，均不阻断）；`gradlew test` 71 用例 0 失败、
+    `buildPlugin` / `verifyPlugin` 通过，产物 `until-build="263.*"`、字节码仍为 major 55。
+  - 已对 2026.3 SDK 实测：`DynamicBundle.getLocale()` 仍为 `public static`；
+    `changesViewContent` EP 的 `tabName` / `predicateClassName` / `displayNameSupplierClassName`
+    与 `postStartupActivity` 均未变化；svn4idea `263.7307.216` 的关键公开 API 签名与 2022.1 一致。
+  - ⚠️ 回归命令必须用 **IU 统一发行版**：把 `-PverifierLocalIde` 指向 Gradle 解压的
+    `ideaIC-2026.3`（`IC-263.7307.200`）会因 Marketplace 解析不到 `Subversion` 而误报
+    31 个 `org.jetbrains.idea.svn.*` 类 unresolved（详见 README「兼容性说明」）。
+
 ### 新增
 - **复刻原版「Configure Branches」（2026-11-01）**：工作副本信息块新增 **Configure Branches** 链接
   （位置与原版一致：Cleanup 之后、Merge From… 之前），动作复用内置插件**公开**的

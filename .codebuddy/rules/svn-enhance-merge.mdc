@@ -98,7 +98,8 @@ alwaysApply: false
 | IDE | build | 运行时 | 依据 |
 |---|---|---|---|
 | 2022.1（当前下限） | `IC-221.5080.210` | **JBR 11.0.14.1** | 沙箱 `idea.log`：`JRE: 11.0.14.1+1-b2043.25 (JetBrains s.r.o.)` |
-| 2026.2.3（当前上限） | `IC-262.10968.63` | **JBR 21/25 量级** | Gradle 缓存已解析 `com.jetbrains/jbre/jbr-25.0.4-windows-x64-b508.27`；2026.2.3 未跑过 `runIde`，该值属"已解析"而非"已实跑" |
+| 2026.2.3 | `IC-262.10968.63` | **JBR 21/25 量级** | Gradle 缓存已解析 `com.jetbrains/jbre/jbr-25.0.4-windows-x64-b508.27`；未跑过 `runIde`，该值属"已解析"而非"已实跑" |
+| 2026.3（当前上限） | `IU-263.7307.200`（统一发行版；编译 SDK 侧为 `IC-263.7307.200`） | **JBR 21/25 量级** | 2026-11-05 发布；Plugin Verifier 成功读取本机 `~/.cache/pluginVerifier/ides/IU-2026.3` 并判定 Compatible；未跑过 `runIde` |
 
 JVM **向下兼容**类文件：Java 11 字节码（major 55）在更高版本 JBR 上照常加载；反过来**不成立**。
 
@@ -119,7 +120,7 @@ com.intellij.diagnostic.PluginException: Cannot create extension
 
 - 故 **`jvmTarget=11` 与 `since-build=221` 是绑定的硬约束**；
 - 若要把字节码 / 语言级别升到 17，必须同时把 `since-build` 由 **221 抬到 223**
-  （IDEA 2022.3 起才是 JBR 17），即**放弃 2022.1 / 2022.2 用户**；上限（262.*）不受影响。
+  （IDEA 2022.3 起才是 JBR 17），即**放弃 2022.1 / 2022.2 用户**；上限（263.*）不受影响。
   **该取舍待用户决策，未实施。**
 - 产物版本自检（改了构建脚本必跑）：
   `javap -verbose -cp build/classes/kotlin/main com.weixf.svn.mergeenhance.flow.MergeFlow | grep "major version"`
@@ -263,15 +264,20 @@ Remove-Item -Recurse -Force build\idea-sandbox     # 清空沙箱（IPGP 会重�
 
 - **禁止引入 SVNKit** 或任何外部 Maven 坐标；所需类全部由 IntelliJ SDK 提供。
 - `intellij { version.set("2022.1"); type.set("IC"); updateSinceUntilBuild.set(false) }` + **必须**把 Subversion 插件加入 `plugins`，
-  否则 `import org.jetbrains.idea.svn.*` 编译期找不到类。**但引用形式随 IDE 版本而变**（2026-10-18 实证）：
+  否则 `import org.jetbrains.idea.svn.*` 编译期找不到类。**但引用形式随 IDE 版本而变**（2026-10-18 实证，2026-11-07 扩充）：
   - **2022.1 ~ 2025.x**：IDEA 内置 svn4idea → `plugins.set(listOf("Subversion"))`；
-  - **2026.x**：JetBrains 已把 SVN **unbundle**（`ideaIC-2026.2.3/plugins/` 下只有 `vcs-git*`，无 `svn4idea`），
+  - **2026.x 起**：JetBrains 已把 SVN **unbundle**（`ideaIC-2026.3/plugins/` 下也只有 `vcs-git*`，无 `svn4idea`），
     再写 `"Subversion"` 会报 `Cannot find builtin plugin 'Subversion'`；须按 `id:version` 从 Marketplace 取
-    → `plugins.set(listOf("Subversion:262.10968.211"))`。版本号可从 `runPluginVerifier` 报告的
-    `dependencies.txt` 里查到（verifier 会自动按 IDE 版本解析出配套的 SVN 插件 build）。
-    当前脚本按 `version.get().startsWith("2026")` 自动切换，`-PsvnMarketplaceVersion=<版本>` 可覆盖。
+    → 2026.3 用 `plugins.set(listOf("Subversion:263.7307.216"))`、2026.2 用 `262.10968.211`。
+    版本号用 `POST plugins.jetbrains.com/api/search/compatibleUpdates`
+    （body `{"build":"IU-263.7307.200","pluginXMLIds":["Subversion"]}`）查；也可从 `runPluginVerifier`
+    报告的 `dependencies.txt` 复核（verifier 自动按 IDE build 解析配套版本）。
+    ⚠️ 该接口对 **`IC-263.*` 无结果**，只有 `IU-263.*` / `IIU-263.*` 返回 `263.7307.216` ——
+    这也是「`-PverifierLocalIde` 不能指向 `ideaIC-2026.3`」的根因（见文末 2026-11-07 节）。
+    当前脚本按 IDE **年份 ≥ 2026** 自动切换，并为 `2026.3` 选 `263.7307.216`；
+    `-PsvnMarketplaceVersion=<版本>` 可覆盖（2027.x 发布、映射尚未登记时用）。
     **注意**：默认（2022.1）构建必须走内置版本，否则会用 2026 版 svn4idea 编译却对外声明支持 2022.1。
-- `patchPluginXml { sinceBuild.set("221"); untilBuild.set("262.*") }`（221 = IDEA 2022.1 首个 build；262.* = 已验证上限 2026.2.3）。
+- `patchPluginXml { sinceBuild.set("221"); untilBuild.set("263.*") }`（221 = IDEA 2022.1 首个 build；263.* = 已验证上限 2026.3）。
 - `plugin.xml`：`<depends>com.intellij.modules.vcs</depends>` + `<depends>Subversion</depends>` + `<idea-version since-build="221"/>`。
 - **Kotlin stdlib 不得打包**：`gradle.properties` 必须保留 `kotlin.stdlib.default.dependency=false`。
   否则 `verifyPluginConfiguration` 报 stdlib 冲突（官方警告），zip 会多背 1.8MB 的 stdlib + `annotations.jar`。
@@ -620,9 +626,11 @@ svn4idea 把「工作副本根 → URL」的映射**缓存**在 `SvnFileUrlMappi
 | 2025.3 | 253.33813.109 | 同上 |
 | 2026.1 | 261.27258.145 | 同上 |
 | 2026.2 | 262.10968.211（verifier 解析）/ 262.11879.106（Marketplace 最新） | 同上 |
+| 2026.3 | 263.7307.216 | 同上 |
 
-→ **2022–2026 全程可见性与签名零变化**（`javap` 实测，非推断）。
-IDEA 2026.3 / build 263 Marketplace 暂无兼容版本，且本插件 `until-build=262.*`，不在支持范围。
+→ **2022 – 2026.3 全程可见性与签名零变化**（`javap` 实测，非推断）。
+IDEA 2026.3（build `263.7307.200`）已于 2026-11-07 纳入支持范围（`until-build=263.*`）；
+配套 `Subversion 263.7307.216` 的 `<idea-version since-build="263.7307" until-build="263.*"/>`。
 核验方法（可复用）：`POST https://plugins.jetbrains.com/api/search/compatibleUpdates`
 （body `{"build":"IC-233.15619.13","pluginXMLIds":["Subversion"]}`，**必须带 `Content-Type: application/json`**）
 拿到 `id` 后 `GET https://plugins.jetbrains.com/plugin/download?rel=true&updateId=<id>` 取 zip，
@@ -633,7 +641,7 @@ IDEA 2026.3 / build 263 Marketplace 暂无兼容版本，且本插件 `until-bui
 | 项 | 结论 |
 |---|---|
 | 反射 / 内部 API | **零**（Plugin Verifier 报告里**没有** internal-api-usages 文件；仅 1 处既有 deprecated：`ActionToolbar.updateActionsImmediately`，平台仍可用） |
-| 二进制兼容 | `runPluginVerifier`：IC-221 与 IC-262 均 **Compatible** |
+| 二进制兼容 | `runPluginVerifier`：IC-221 与 IU-263 均 **Compatible** |
 | 依赖声明 | `<depends>Subversion</depends>` 已有（2026.x 起 SVN 不再随发行版分发，`<description>` 已提示先装官方 SVN 插件） |
 | 行为一致性 | 原版 `CopiesPanel.configureBranches` = `checkRoot(root, …)` + 同一句 `BranchConfigurationDialog.configureBranches(project, root)`；我们**逐行同构** |
 | 不越界 | 不写 `SvnConfiguration`、不新增 EP/action、不轮询、不后台线程（EDT 上直接弹模态 `DialogWrapper`，与原版一致） |
@@ -931,27 +939,32 @@ TortoiseSVN 的 `LogDlg` 里，**搜索/过滤从不触发服务器请求**：`m
   （本插件用 2022.1 单参，已加 try-catch 降级）。
 - 入口反射目标 `org.jetbrains.idea.svn.dialogs.WorkingCopyInfoPanel.getInfo()`：
   **2022.1 与 2026.2.3 的 svn4idea 中类名/包名/签名完全一致**（已逐 jar 比对），注入机制无需改动。
-- `until-build=262.*`（2026.2.3）。一键回归：`gradlew verifyOnIde -PideaVersion=<版本>`（内部按 OS 调
+- `until-build=263.*`（2026.3）。一键回归：`gradlew verifyOnIde -PideaVersion=<版本>`（内部按 OS 调
   `scripts/verify-plugin.ps1|sh`：自动切 SDK 启沙箱、轮询就绪、扫插件异常日志，报 PASS/FAIL；
   `-PverifyAutoClose=true` 检查后关闭，`-PverifyTimeout` 放宽等待）。
-- **⚠️ 2026.x 走不了 `verifyOnIde -PideaVersion=2026.2.3`（工具链限制，非插件缺陷，2026-10-18 实证）**：
-  1. IDEA 2026.x 平台 jar 是 **Kotlin 2.4 元数据**，锁定的 Kotlin 1.7.22 编译器读不了
+- **⚠️ 2026.x 走不了 `verifyOnIde`（工具链限制，非插件缺陷，2026-10-18 实证，2026.3 仍成立）**：
+  1. IDEA 2026.x 平台 jar 是 **Kotlin 2.x 元数据**，锁定的 Kotlin 1.7.22 编译器读不了
      （`Incompatible classes were found in dependencies`），无法对着 2026 SDK 重新编译；
   2. IPGP 1.17.3 起不了 2026.x 沙箱：新布局把 vmoptions 放到 `bin/win/idea64.exe.vmoptions`，
      其中有 `-Xmx2048m` / `-ea` 等**不含 `=`** 的条目，触发 IPGP `resolveIdeHomeVariable`
      的 `entry.split("=")` 解构下标 1 越界 → `IndexOutOfBoundsException: Index: 1, Size: 1`。
   故 2026.x 的兼容性依据是 **Plugin Verifier**（自动按 IDE 版本解析配套 Marketplace 版 SVN 插件做二进制比对）；
-  入口链接与合并主流程需在真实 2026.2.3 人工过一遍。要恢复编译期回归能力须迁 IPGP 2.x + Kotlin 2.x（改动面大）。
-- **验证状态（务必知悉）**：`verify-plugin.ps1` 与 `verifyOnIde` 任务已在 Windows + IDEA 2022.1 实跑通过（PASS，issues 0，2026-10-19 复跑仍 PASS）；
+  常驻标签页入口与合并主流程需在真实 2026.3 人工过一遍。要恢复编译期回归能力须迁 IPGP 2.x + Kotlin 2.x（改动面大）。
+- **验证状态（务必知悉，2026-11-07 更新）**：`verify-plugin.ps1` 与 `verifyOnIde` 任务已在 Windows + IDEA 2022.1 实跑通过（PASS，issues 0）；
   `runPluginVerifier`（官方 Plugin Verifier **1.410**，已在 build.gradle.kts 里 pin 住，不再用会联网解析 latest 的 `VERSION_LATEST`）
-  用 `-PverifierLocalIde="G:/GradleRepository/idea/ideaIC-2022.1,G:/GradleRepository/idea/ideaIC-2026.2.3"`
-  （**本机路径**：指向 Maven 仓库解压的 ideaIC 目录，2026.2.3 也能取到）
-  **CI 路径**（无 localIde，走 JetBrains Data Services 下载）：上限必须写 `IU-2026.2.3` —— 2026 起 Community/Ultimate 合并为统一发行版，
-  但两端一起下会撑爆 GitHub runner 磁盘（2022.1 包 814MB + 2026.2.3 包 1.5GB，再加解压与缓存，
-  实测报 `Insufficient space for shared memory file` + download 失败）；CI 因此传 `-PverifierIdeVersions=IC-2022.1`
-  只校验下限（也是 since-build 闸门），上限回归留给本机 localIde 通道。
-  接口已无独立的 ideaIC-2026.x 条目（实测 `code=IC&version=2026.2.3` → HTTP 404，`code=IU/IIU` → 302 指向
-  `idea-2026.2.3.tar.gz`），写 IC 会报 `IDE 'IC-2026.2.3' cannot be downloaded`。
+  **本机两端回归**（2026-11-07 实跑 PASS）：
+  `-PverifierLocalIde=G:/GradleRepository/idea/ideaIC-2022.1,C:/Users/<you>/.cache/pluginVerifier/ides/IU-2026.3`
+  （逗号分隔多目录）。第二个目录必须是 **IU 统一发行版**（`build.txt` = `IU-263.7307.200`），
+  可由 `./gradlew runPluginVerifier -PverifierIdeVersions=IU-2026.3` 自动下载得到。
+  ⛔ **不要把上限指向 Gradle 解压的 `ideaIC-2026.3`**（`build.txt` = `IC-263.7307.200`）：
+  Marketplace `compatibleUpdates` 对 `IC-263.*` 无结果 → verifier 报
+  `(failed) Subversion: Unavailable` → 把 31 个 `org.jetbrains.idea.svn.*` 类全判 unresolved，
+  误报 `COMPATIBILITY_PROBLEMS`（2026-11-07 实测踩到，详见文末 2026-11-07 节）。
+  **CI 路径**（无 localIde，走 JetBrains Data Services 下载）：上限写 `IU-2026.3` —— 2026 起
+  Community/Ultimate 合并为统一发行版；但两端一起下会撑爆 GitHub runner 磁盘
+  （2022.1 包 814MB + 2026.3 包 1.5GB，再加解压与缓存），CI 因此传
+  `-PverifierIdeVersions=IC-2022.1` 只校验下限，上限回归留给本机 localIde 通道。
+  （历史：`code=IC&version=2026.2.3` → HTTP 404，`code=IU/IIU` → 302 指向 `idea-2026.2.3.tar.gz`。）
   （逗号分隔多目录）实跑：**IC-221.5080.210 与 IC-262.10968.63 两端均 Compatible**，2026.2.3 侧 0 兼容性问题
   （仅 2 处 deprecated：`ActionToolbar.updateActionsImmediately`、`TableViewSpeedSearch` 单参构造，都仍可用不阻断），报告在 `build/reports/pluginVerifier/`；
   `verifyPlugin` / `verifyPluginConfiguration`（官方包结构与配置校验）均通过且**零告警**；
@@ -991,3 +1004,51 @@ TortoiseSVN 的 `LogDlg` 里，**搜索/过滤从不触发服务器请求**：`m
 
 - **PowerShell 调用 gradlew 的坑**：`-PideaVersion=2022.1` 这类含点号的参数必须加引号
   （`"-PideaVersion=2022.1"`），否则会被 PowerShell 拆成 `-PideaVersion=2022` + `.1`，报 `Task '.1' not found`。
+
+### 2026-11-07 适配 IDEA 2026.3（**已实施并验证**）
+
+> 用户诉求：「适配最新版 IDEA 2026.3」。IDEA 2026.3 于 2026-11-05 发布，build `263.7307.200`。
+
+| 项 | 处理 |
+|---|---|
+| 支持上限 | `untilBuild` / 打包产物 `until-build`：`262.*` → **`263.*`**；`since-build=221` 与字节码 major 55 不变 |
+| 配套 SVN 插件 | 2026.x 仍 unbundle；`compatibleUpdates` 实测 `IU-263.7307.200` → `Subversion 263.7307.216`（`since-build=263.7307` / `until-build=263.*`）。`build.gradle.kts` 加版本映射：IDE 年份 ≥ 2026 走 `Subversion:<版本>`，`2026.3` 用 `263.7307.216`，其余沿用 `262.10968.211`；`-PsvnMarketplaceVersion` 可覆盖 |
+| Verifier 目标 | 默认上限 `IU-2026.2.3` → **`IU-2026.3`**；本机双端回归改指 IU 统一发行版目录 |
+| 文档 | `plugin.xml`（注释 + change-notes）、README、CHANGELOG、CI job 名与注释、本规则文档 |
+
+**实证结论（不要凭推断）**：
+- `gradlew test` **71 用例 0 失败**；`buildPlugin` BUILD SUCCESSFUL（zip 133,149 B）；
+  `verifyPlugin` / `verifyPluginConfiguration` 通过；从 zip 内的 jar 读到
+  `<idea-version since-build="221" until-build="263.*" />`。
+- `setupDependencies -PideaVersion=2026.3` 成功：Maven 有 `ideaIC:2026.3`，解出
+  `G:/GradleRepository/idea/ideaIC-2026.3`（`build.txt=IC-263.7307.200`），`plugins/` 下仍无
+  svn4idea；Marketplace 版 SVN 插件由 `Subversion:263.7307.216` 解析成功。
+- 官方 Plugin Verifier 1.410：`IC-221.5080.210` → **Compatible**；
+  `IU-263.7307.200` → **Compatible. 4 usages of deprecated API**（`ModalityState.NON_MODAL` ×3、
+  `ActionToolbar.updateActionsImmediately` ×1，均为软问题、不阻断）；无 `compatibility-problems.txt`；
+  `dependencies.txt` 首行依赖 `Subversion:263.7307.216`。
+- 平台侧实测：`DynamicBundle.getLocale()` 仍 `public static java.util.Locale`；
+  `platform-vcs-plugin.jar!META-INF/plugin.xml` 的 `changesViewContent` 仍用
+  `tabName` / `className` / `predicateClassName` / `displayNameSupplierClassName`，
+  `postStartupActivity` 也在 → 本插件唯一入口的接线在 2026.3 不变。
+- svn4idea `263.7307.216` 关键 API 逐一 javap：`BranchConfigurationDialog.configureBranches(Project, VirtualFile)`、
+  `MergeTask(QuickMerge, Runnable)`、`LocalChangesPromptTask`、`SvnIntegrateChangesTask`、
+  `ChangeListsMergerFactory`、`SvnCommittedChangesProvider.getCommittedChanges`、
+  `SvnVcs.ROOTS_RELOADED` / `invokeRefreshSvnRoots()` / `getAllWcInfos()`、
+  `MergeChecker` / `OneShotMergeInfoHelper` 等签名与 2022.1 一致。
+
+**⛔ 本次最大的坑（勿重复排查）**：
+`-PverifierLocalIde` 指向 **Gradle 解压的 `ideaIC-2026.3`** 会 FAIL
+（`COMPATIBILITY_PROBLEMS`），报告里 `+--- (failed) Subversion: Unavailable` +
+「Package `org.jetbrains.idea.svn` is not found along with its 31 classes」。
+根因不是插件 API 断裂，而是该目录 `build.txt` 是 `IC-263.7307.200`，而
+Marketplace `compatibleUpdates` 对 **`IC-263.*` 返回空**（只有 `IU-263.*` / `IIU-263.*`
+返回 `263.7307.216`）→ verifier 解析不到声明的 `<depends>Subversion</depends>`，
+把整包 svn4idea 类当作 unresolved。
+**正确通道**：① `./gradlew runPluginVerifier -PverifierIdeVersions=IU-2026.3`（自动下载统一发行版，
+实测 BUILD SUCCESSFUL）；② 双端
+`-PverifierLocalIde=<ideaIC-2022.1>,<~/.cache/pluginVerifier/ides/IU-2026.3>`（实跑两端 Compatible）。
+
+**遗留**：2026.x 仍无法做「重新编译 + 沙箱」回归（Kotlin 1.7.22 / IPGP 1.x），
+常驻标签页入口与合并主流程需在真实 2026.3 人工走一遍；`ModalityState.NON_MODAL`
+在 2026.3 被标为 deprecated 但仍可用，按既定 write-safe 约束**不改成 `ModalityState.any()`**。

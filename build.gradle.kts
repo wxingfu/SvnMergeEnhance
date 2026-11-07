@@ -75,13 +75,24 @@ intellij {
     //
     // 引用形式随 IDE 版本而变：**JetBrains 从 2026.x 起把 SVN 从发行版 unbundle**，
     //   - 2022.1 ~ 2025.x：IDEA 内置 svn4idea，按插件名/ID 引用即可；
-    //   - 2026.x：需按 `id:version` 从 JetBrains Marketplace 取与该 IDE 同 build 的那一版
-    //     （IC-262.10968.63 → Subversion 262.10968.211，可在 runPluginVerifier 报告的
-    //      dependencies.txt 里查到实际解析到的版本）。
-    // 用 -PsvnMarketplaceVersion=<版本> 覆盖；注意不要让默认（2022.1）构建走 Marketplace 版本，
-    // 否则会用 2026 版 svn4idea 编译，却对外声明支持 2022.1。
-    val svnPluginRef = if (version.get().startsWith("2026")) {
-        "Subversion:${providers.gradleProperty("svnMarketplaceVersion").getOrElse("262.10968.211")}"
+    //   - 2026.x 起：需按 `id:version` 从 JetBrains Marketplace 取与该 IDE 同 build 的那一版。
+    //     版本号由 `POST https://plugins.jetbrains.com/api/search/compatibleUpdates`
+    //     （body {"build":"IU-263.7307.200","pluginXMLIds":["Subversion"]}）查得：
+    //     IDEA 2026.3 (263.7307.200) → Subversion 263.7307.216；
+    //     IDEA 2026.2 (262.10968.63) → Subversion 262.10968.211。
+    // 用 -PsvnMarketplaceVersion=<版本> 覆盖（新 IDE 版本发布、映射尚未更新时）；
+    // 注意不要让默认（2022.1）构建走 Marketplace 版本，否则会用 2026 版 svn4idea 编译，
+    // 却对外声明支持 2022.1。
+    val targetIdeVersion = version.get()
+    val targetIdeYear = targetIdeVersion.substringBefore('.').toIntOrNull() ?: 0
+    val svnMarketplaceVersion = providers.gradleProperty("svnMarketplaceVersion").orNull
+        ?: when {
+            targetIdeVersion.startsWith("2026.3") -> "263.7307.216"
+            // 2026.1 / 2026.2 及尚未登记映射的更新版本（用 -PsvnMarketplaceVersion 覆盖）
+            else -> "262.10968.211"
+        }
+    val svnPluginRef = if (targetIdeYear >= 2026) {
+        "Subversion:$svnMarketplaceVersion"
     } else {
         "Subversion"
     }
@@ -117,10 +128,11 @@ tasks.test {
 tasks.withType<PatchPluginXmlTask> {
     // 最低支持 IDEA 2022.1（build 221）
     sinceBuild.set("221")
-    // 已验证上限：2026.2.3（build 262.*）—— 已用 `verifyOnIde -PideaVersion=2026.2.3` 沙箱回归 +
-    // `runPluginVerifier` 比对 IC-2022.1 / IC-2026.2.3 两端二进制 API（svn4idea 14 个关键 API 无断裂）。
-    // 更高版本（2026.3+）仍须先回归再提高此值。
-    untilBuild.set("262.*")
+    // 已验证上限：IDEA 2026.3（build 263.7307.200 → 263.*）—— 已用 `runPluginVerifier`
+    // 比对 IC-2022.1 / IU-2026.3 两端二进制 API（平台 API 与 svn4idea 关键 API 均无断裂）。
+    // 2026.x 走不了沙箱回归（Kotlin 1.7.22 / IPGP 1.x 工具链限制，见 README「兼容性说明」），
+    // 依据只有 Plugin Verifier；更高版本仍须先回归再提高此值。
+    untilBuild.set("263.*")
 }
 
 // ------------------------------------------------------------ 插件包根目录文件
@@ -151,26 +163,25 @@ tasks.named<BuildPluginTask>("buildPlugin") {
 tasks.named<RunPluginVerifierTask>("runPluginVerifier") {
     val localIde = providers.gradleProperty("verifierLocalIde").orNull
     if (!localIde.isNullOrBlank()) {
-        // 逗号分隔 → 多个本地 IDE 目录（如 ideaIC-2022.1,ideaIC-2026.2.3 一键回归支持范围两端）
+        // 逗号分隔 → 多个本地 IDE 目录（如 ideaIC-2022.1,ideaIC-2026.3 一键回归支持范围两端）
         localPaths.set(localIde.split(',').map { file(it.trim()) }.filter { it.isDirectory })
     } else {
-        // 只取支持范围的两端：最低（221）与最高（262.*），中间版本 API 连续，抽查两端即可。
+        // 只取支持范围的两端：最低（221）与最高（263.*），中间版本 API 连续，抽查两端即可。
         //
         // ⚠️ 2026.x 必须写 **IU** 而不是 IC：IDEA 2026 起 JetBrains 把 Community 与 Ultimate
         // 合并为统一发行版，Data Services 下载接口里已无独立的 ideaIC-2026.x 条目
-        // （实测 code=IC&version=2026.2.3 → HTTP 404，而 code=IU / IIU → 302 指向
-        // download.jetbrains.com/idea/idea-2026.2.3.tar.gz），IPGP 由此报
-        // "IDE 'IC-2026.2.3' cannot be downloaded"。
+        // （实测 code=IC&version=2026.3 → 无结果，而 code=IU / IIU → 302 指向
+        // download.jetbrains.com/idea/idea-2026.3.tar.gz）。
         //
-        // ⚠️ 两端一起下会撑爆 CI 磁盘（2022.1 包 814MB / 解压约 2.5GB，2026.2.3 包 1.5GB /
+        // ⚠️ 两端一起下会撑爆 CI 磁盘（2022.1 包 814MB / 解压约 2.5GB，2026.3 包 1.5GB /
         // 解压 4GB+，再加 Gradle 与 IDE 缓存），实测 GitHub runner 会写不下并报
         // "Insufficient space for shared memory file" + download 失败。
         // 故开放 -PverifierIdeVersions=<逗号分隔> 覆盖：CI 只校验下限（也是 since-build 闸门），
-        // 上限由本机 -PverifierLocalIde（指向 Maven 仓库解压的 ideaIC-2026.2.3）回归。
+        // 上限由本机 -PverifierLocalIde（指向 Maven 仓库解压的 ideaIC-2026.3）回归。
         ideVersions.set(
             providers.gradleProperty("verifierIdeVersions")
                 .map { raw -> raw.split(',').map { it.trim() }.filter { it.isNotEmpty() } }
-                .getOrElse(listOf("IC-2022.1", "IU-2026.2.3"))
+                .getOrElse(listOf("IC-2022.1", "IU-2026.3"))
         )
     }
     // 只对「兼容性硬问题」失败（缺类、签名不符）。deprecated / 内部 API 等软问题只报告不阻断，
@@ -178,7 +189,7 @@ tasks.named<RunPluginVerifierTask>("runPluginVerifier") {
     failureLevel.set(listOf(RunPluginVerifierTask.FailureLevel.COMPATIBILITY_PROBLEMS))
     // 固定版本而不用默认的 VERSION_LATEST：后者每次执行都要联网向 JetBrains API 解析"最新版"，
     // 偶发 connection reset 会让任务以"Failed to calculate verifierPath"莫名失败（2026-10-18 实测踩到）。
-    // 1.410 已实测能校验 IC-2022.1 与 IC-2026.2.3；需要升级时用 `-PverifierVersion=<新版>` 覆盖。
+    // 1.410 已实测能校验 IC-2022.1 与 IU-2026.3；需要升级时用 `-PverifierVersion=<新版>` 覆盖。
     verifierVersion.set(providers.gradleProperty("verifierVersion").getOrElse("1.410"))
 }
 
@@ -189,8 +200,11 @@ tasks.named<RunPluginVerifierTask>("runPluginVerifier") {
 // 用法：
 //   gradlew verifyOnIde                          # 默认验证 2022.1
 //   gradlew verifyOnIde -PideaVersion=2025.2     # 验证指定版本（首次会下载该 IDE）
-//   gradlew verifyOnIde -PideaVersion=2026.2.3 -PverifyTimeout=900
 //   gradlew verifyOnIde -PideaVersion=2025.2 -PverifyAutoClose=true   # 检查后关闭沙箱
+//
+// ⚠️ 2026.x（含 2026.3）**不能**用本任务回归：Kotlin 1.7.22 读不了 2026 平台 jar 的
+// Kotlin 2.x 元数据，IPGP 1.x 也起不了 2026 沙箱（vmoptions 布局变化）。
+// 2026.x 一律走 `runPluginVerifier`（见上一节）。
 //
 // 为什么抽成任务类而非 registering { doLast { } }：Gradle 8.11 起 Project.exec 已弃用
 // （编译期 w: 告警，9.0 直接移除），官方替代 ExecOperations 只能经服务注入（@get:Inject）

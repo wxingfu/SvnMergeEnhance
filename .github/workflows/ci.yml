@@ -33,7 +33,7 @@ jobs:
           if-no-files-found: error
 
   plugin-verifier:
-    name: Plugin Verifier (2022.1 / 2026.2.3)
+    name: Plugin Verifier (2022.1 / 2026.3)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -48,10 +48,11 @@ jobs:
 
       - name: Run IntelliJ Plugin Verifier
         # 同样兜底 chmod。**只校验下限 IC-2022.1**：
-        # 1) 2026 起 Community/Ultimate 合并，上限要写 IU-2026.2.3（code=IC 已 404）；
-        # 2) 但两端一起下会撑爆 runner 磁盘（2022.1 包 814MB + 2026.2.3 包 1.5GB，
+        # 1) 2026 起 Community/Ultimate 合并，上限要写 IU-2026.3（独立 IC 条目已无）；
+        # 2) 但两端一起下会撑爆 runner 磁盘（2022.1 包 814MB + 2026.3 包 1.5GB，
         #    再加解压与缓存，实测会报 Insufficient space for shared memory file）。
-        # 上限回归改由本机 `-PverifierLocalIde=<ideaIC-2026.2.3 目录>` 完成，见 README。
+        # 上限回归改由本机 `-PverifierLocalIde=<IU-2026.3 统一发行版目录>` 完成，见 README
+        # （不能用 ideaIC-2026.3：Marketplace 对 IC-263.* 解析不到 Subversion 依赖）。
         run: chmod +x gradlew && ./gradlew runPluginVerifier -PverifierIdeVersions=IC-2022.1 --stacktrace
 
       - name: Upload verifier report
